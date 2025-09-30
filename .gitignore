@@ -1,0 +1,6 @@
+backend/__pycache__/
+backend/backend/
+backend/database/__pycache__/
+backend/sqlite.db
+frontend/.env
+frontend/.gitignore

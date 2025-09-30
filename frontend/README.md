@@ -1,0 +1,90 @@
+# Meeting ASR Frontend
+
+The frontend for the Meeting ASR (Automatic Speech Recognition) application. A React-based interface for uploading audio files, processing them through speech recognition, and managing transcribed content with advanced features.
+
+## Features
+
+- **User Authentication**: Secure login and registration system
+- **Audio Upload**: Upload audio/video files for transcription
+- **Transcript Management**: View and manage transcribed content
+- **AI Transcript Optimization**: One-click optimization with LLM
+- **Interactive Transcript Display**: Speaker-separated transcript with timestamps
+- **Click-to-Play**: Click on transcript segments to jump to corresponding audio
+- **Additional Processing**: Summarization and translation capabilities
+- **Responsive Design**: Works on desktop and mobile devices
+
+## New Features Added
+
+### AI Transcript Enhancement
+- 'Optimize with AI' button for comprehensive transcript improvement
+- Improves readability, fixes grammatical errors, and organizes conversation flow
+- Maintains speaker labels during optimization
+
+### Improved Transcript Editor
+- Segment-based display with speaker identification
+- Timestamps for each transcript segment
+- Visual distinction between different speakers
+- Clickable segments for direct audio navigation
+
+### Audio Synchronization
+- Click on any transcript segment to jump to the corresponding audio position
+- Audio playback controls integrated with transcript display
+- Visual feedback during audio playback
+
+## Prerequisites
+
+- Node.js 16+ 
+- npm or yarn package manager
+- Backend server running (see backend/README.md)
+
+## Installation
+
+1. **Clone the repository** (if you haven't already):
+   ```bash
+   git clone <repository-url>
+   cd Meeting-ASR/frontend
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Set up environment variables**:
+   Create a `.env` file in the frontend directory:
+   ```env
+   REACT_APP_API_URL=http://localhost:8000
+   ```
+
+4. **Start the development server**:
+   ```bash
+   npm start
+   ```
+
+The application will be available at [http://localhost:3000](http://localhost:3000)
+
+## Available Scripts
+
+### `npm start`
+Runs the app in development mode.
+
+### `npm test`
+Launches the test runner in interactive watch mode.
+
+### `npm run build`
+Builds the app for production deployment.
+
+## Project Structure
+
+- `src/components/TranscriptEditor.tsx` - Enhanced transcript editor with AI optimization and click-to-play
+- `src/pages/JobDetailPage.tsx` - Updated page with new transcript editor component
+- `src/api.ts` - API client configuration
+- `src/App.tsx` - Main application routing
+
+## API Configuration
+
+The frontend communicates with the backend API for all functionality. The default API URL is `http://localhost:8000`. Update the `REACT_APP_API_URL` environment variable to point to your backend server.
+
+## Learn More
+
+For more information about the backend API and additional features, see the backend documentation in `backend/README.md`.

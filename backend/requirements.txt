@@ -1,0 +1,22 @@
+# For API Server
+fastapi
+uvicorn[standard]
+openai
+python-dotenv
+python-multipart
+
+# For Database and Auth
+sqlalchemy
+passlib
+argon2-cffi
+python-jose[cryptography]
+
+# For ASR
+# Using FunASR for Chinese ASR with punctuation support
+funasr
+torch
+torchaudio
+pyannote.audio
+librosa
+soundfile
+numpy
