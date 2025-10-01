@@ -214,111 +214,6 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         print(f"[Job {job_id}] Running Pyannote diarization...")
         diarization = diarization_pipeline(converted_file)
 
-        # Use only the specified FunASR model for ASR (no backup models)
-        transcription_result = None
-        full_transcript = ""
-        
-        # Use FunASR with a stable model for Chinese with punctuation and word-level timestamps
-        from funasr import AutoModel
-        print(f"[Job {job_id}] Using FunASR for Chinese ASR with punctuation...")
-        
-        # Try the primary model first, with additional parameters to prevent tensor size issues
-        # Enable return of timestamps for better alignment with speaker diarization
-        try:
-            model = AutoModel(
-                model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-                model_revision="v2.0.4",
-                vad_model="fsmn-vad",
-                vad_model_revision="v2.0.4",
-                punc_model="ct-punc",  # 标点符号模型
-                punc_model_revision="v2.0.4",
-            )
-            
-            # Generate with specific parameters to avoid tensor size mismatch and get word-level timestamps
-            res = model.generate(
-                input=converted_file,
-                hotword="",
-                token_max_batch_size=1,  # Process one audio file at a time
-                return_raw_dict=True,    # Return raw dictionary for access to timestamps
-                output_dir=None,         # Don't save to disk
-                batch_size=1,            # Process one at a time
-                mode="2pass",            # Use two-pass decoding if supported
-            )
-        except RuntimeError as e:
-            if "Sizes of tensors must match" in str(e):
-                print(f"[Job {job_id}] Primary model failed with tensor size error, trying fallback model...")
-                # Fallback to another model that doesn't have tensor size issues
-                model = AutoModel(
-                    model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-                    model_revision="v2.0.4",
-                    punc_model="ct-punc",
-                    punc_model_revision="v2.0.4",
-                )
-                
-                res = model.generate(
-                    input=converted_file,
-                    return_raw_dict=True,
-                    batch_size=1
-                )
-            elif "shape" in str(e).lower() or "dimension" in str(e).lower():
-                print(f"[Job {job_id}] Model failed with shape error, trying simpler configuration...")
-                # Additional fallback with minimal parameters
-                model = AutoModel(
-                    model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-                    punc_model="ct-punc",
-                )
-                
-                res = model.generate(
-                    input=converted_file,
-                    batch_size=1
-                )
-            else:
-                raise e
-
-        # Extract the transcription result with punctuation
-        # Also try to extract timestamp information if available for better alignment
-        word_level_info = []  # To store word-level timing if available
-        
-        # Handle different result formats from primary and fallback models
-        if isinstance(res, list):
-            for item in res:
-                if 'text' in item:
-                    full_transcript += item['text'] + " "
-                elif 'nbest' in item:  # Some models return results in 'nbest' field
-                    if isinstance(item['nbest'], list) and len(item['nbest']) > 0:
-                        full_transcript += item['nbest'][0]['sentence'] + " "
-                        # Also check for timestamps in nbest results
-                        if 'timestamp' in item['nbest'][0]:
-                            word_level_info.extend(item['nbest'][0]['timestamp'])
-                elif 'sentence' in item:  # Some models return results in 'sentence' field
-                    full_transcript += item['sentence'] + " "
-                # Check for word-level timestamp information
-                if 'timestamp' in item:
-                    word_level_info.extend(item['timestamp'])
-                # Check if result has word information with timestamps
-                if 'wnd' in item:  # Word-level timing information
-                    word_level_info.extend(item['wnd'])
-        else:
-            if 'text' in res:
-                full_transcript = res['text']
-            elif 'nbest' in res:  # Some models return results in 'nbest' field
-                if isinstance(res['nbest'], list) and len(res['nbest']) > 0:
-                    full_transcript = res['nbest'][0]['sentence']
-                    # Check for timestamps in nbest results
-                    if 'timestamp' in res['nbest'][0]:
-                        word_level_info = res['nbest'][0]['timestamp']
-            elif 'sentence' in res:  # Some models return results in 'sentence' field
-                full_transcript = res['sentence']
-            # Check for word-level timestamp information
-            if 'timestamp' in res:
-                word_level_info = res['timestamp']
-            # Check for word-level information
-            if 'wnd' in res:  # Word-level timing information
-                word_level_info = res['wnd']
-        
-        transcription_result = {'text': full_transcript.strip(), 'timestamp_info': word_level_info}
-
-        print(f"[Job {job_id}] Aligning ASR and diarization results...")
         # Get speaker timestamps
         speaker_segments = [[turn.start, turn.end, speaker] for turn, _, speaker in diarization.itertracks(yield_label=True)]
         speaker_df = pd.DataFrame(speaker_segments, columns=['start', 'end', 'speaker'])
@@ -330,258 +225,243 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         for i, seg in enumerate(speaker_segments[:10]):  # Print first 10 segments as sample
             print(f"  [{i}] {seg[0]:.2f}s-{seg[1]:.2f}s: {seg[2]} (duration: {seg[1]-seg[0]:.2f}s)")
         
-        # DEBUG: Print FunASR result structure
-        print(f"[Job {job_id}] FunASR result type: {type(res)}")
-        if isinstance(res, list):
-            print(f"[Job {job_id}] FunASR result list length: {len(res)}")
-            if len(res) > 0:
-                print(f"[Job {job_id}] First result item keys: {list(res[0].keys()) if isinstance(res[0], dict) else 'Not a dict'}")
-        else:
-            print(f"[Job {job_id}] FunASR result keys: {list(res.keys()) if isinstance(res, dict) else type(res)}")
-        
-        # DEBUG: Print timestamp info if available
-        word_level_info = transcription_result.get('timestamp_info', [])
-        print(f"[Job {job_id}] Available timestamp info: {len(word_level_info)} items")
-        
-        # Get the transcription text with punctuation
-        if transcription_result and 'text' in transcription_result:
-            full_transcript = transcription_result['text']
-            print(f"[Job {job_id}] Transcript (first 200 chars): {full_transcript[:200]}...")  # Print first 200 chars for debugging
-            print(f"[Job {job_id}] Transcript length: {len(full_transcript)} characters")
-        else:
-            # Fallback if ASR failed completely
-            raise Exception("FunASR failed, unable to transcribe audio")
-        
-        # Load the audio file to get its duration for alignment
-        import librosa
+        # Load the audio file to get its duration for alignment and segment processing
         audio_data, sample_rate = librosa.load(converted_file)
         audio_duration = librosa.get_duration(y=audio_data, sr=sample_rate)
         
-        print(f"[Job {job_id}] Audio duration: {audio_duration:.2f} seconds")
+        # Initialize the FunASR model once for the entire process
+        from funasr import AutoModel
+        print(f"[Job {job_id}] Using FunASR for Chinese ASR with punctuation...")
         
-        # Split the full text into segments to assign to speakers
-        import re
-        
-        # First try to split by punctuation followed by space (original approach)
-        potential_segments = re.split(r'(?<=[.!?。！？])\s+', full_transcript)
-        
-        # If this doesn't create multiple segments, try splitting just by punctuation
-        if len(potential_segments) <= 1:
-            potential_segments = re.split(r'[.!?。！？]', full_transcript)
-        
-        # If we still don't have multiple segments, try using jieba for Chinese text segmentation
-        if len(potential_segments) <= 1:
-            try:
-                import jieba
-                # Use jieba to segment the Chinese text into more meaningful chunks
-                # This will break the text into smaller, more semantic units
-                text_list = list(jieba.cut(full_transcript))
-                
-                # Group the jieba segments into chunks to create multiple text segments
-                chunk_size = 20  # Number of jieba tokens per segment
-                potential_segments = []
-                for i in range(0, len(text_list), chunk_size):
-                    chunk = "".join(text_list[i:i+chunk_size]).strip()
-                    if chunk:
-                        potential_segments.append(chunk)
-            except ImportError:
-                # If jieba is not available, fall back to character-based splitting
-                # Split the transcript into fixed-length chunks to ensure we have multiple segments
-                chunk_size = 100  # Number of characters per segment
-                full_text = full_transcript.strip()
-                potential_segments = []
-                for i in range(0, len(full_text), chunk_size):
-                    potential_segments.append(full_text[i:i+chunk_size])
-        
-        potential_segments = [seg.strip() for seg in potential_segments if seg.strip()]
-        
-        print(f"[Job {job_id}] Split transcript into {len(potential_segments)} segments")
-        
-        # Create a precise time-based alignment between speakers and text
-        result_segments = []
-        
-        # Use timestamp information from ASR if available for precise alignment
-        word_level_info = transcription_result.get('timestamp_info', [])
-        
-        if word_level_info and len(speaker_segments) > 0:
-            print(f"[Job {job_id}] Using word-level timestamp information for alignment ({len(word_level_info)} word segments)")
-            
-            # Group word-level results by speaker based on diarization
-            result_segments = []
-            
-            # Process each word/timestamp segment and assign to the appropriate speaker
-            for word_info in word_level_info:
-                if 'start' in word_info and 'end' in word_info and 'text' in word_info:
-                    word_start = word_info['start']
-                    word_end = word_info['end']
-                    word_text = word_info['text']
-                    
-                    # Find the speaker that was active during this word's time
-                    best_speaker = "UNKNOWN"
-                    best_overlap = -1.0
-                    
-                    # Calculate overlap with each speaker segment
-                    for start, end, speaker_label in speaker_segments:
-                        overlap_start = max(word_start, start)
-                        overlap_end = min(word_end, end)
-                        
-                        if overlap_start < overlap_end:
-                            overlap_duration = overlap_end - overlap_start
-                            if best_overlap < 0 or overlap_duration > best_overlap:
-                                best_overlap = overlap_duration
-                                best_speaker = speaker_label
-                    
-                    # If no speaker found in interval, find the one active at midpoint
-                    if best_speaker == "UNKNOWN" or best_overlap < 0:
-                        mid_time = (word_start + word_end) / 2
-                        for start, end, speaker_label in speaker_segments:
-                            if start <= mid_time <= end:
-                                best_speaker = speaker_label
-                                break
-                    
-                    # If still no speaker found, assign to first available speaker
-                    if best_speaker == "UNKNOWN":
-                        best_speaker = speaker_segments[0][2] if speaker_segments else "UNKNOWN"
-                    
-                    # Add this word/segment to results
-                    result_segments.append({
-                        'text': word_text,
-                        'speaker': best_speaker,
-                        'start_time': word_start,
-                        'end_time': word_end
-                    })
-            
-            # Merge consecutive segments from the same speaker for readability
-            if result_segments:
-                merged_segments = []
-                current_speaker = result_segments[0]['speaker']
-                current_text = result_segments[0]['text']
-                current_start = result_segments[0]['start_time']
-                current_end = result_segments[0]['end_time']
-                
-                for i in range(1, len(result_segments)):
-                    segment = result_segments[i]
-                    if segment['speaker'] == current_speaker:
-                        # Same speaker, merge the text
-                        current_text += " " + segment['text']
-                        current_end = segment['end_time']
-                    else:
-                        # Different speaker, save the current segment and start a new one
-                        merged_segments.append({
-                            'text': current_text.strip(),
-                            'speaker': current_speaker,
-                            'start_time': current_start,
-                            'end_time': current_end
-                        })
-                        current_speaker = segment['speaker']
-                        current_text = segment['text']
-                        current_start = segment['start_time']
-                        current_end = segment['end_time']
-                
-                # Add the last segment
-                merged_segments.append({
-                    'text': current_text.strip(),
-                    'speaker': current_speaker,
-                    'start_time': current_start,
-                    'end_time': current_end
-                })
-                
-                result_segments = merged_segments
-        else:
-            # When no timestamp info is available, use a more accurate time-slot approach
-            print(f"[Job {job_id}] No word-level timestamp information available, using improved time-slot alignment")
-            
-            # potential_text_segments was already computed earlier, so we reuse it
-            print(f"[Job {job_id}] Split transcript into {len(potential_segments)} text segments, with {len(speaker_segments)} speaker segments")
-            
-            if potential_segments and len(speaker_segments) > 0:
-                # Create a timeline of speaker activity
-                # Process each speaker segment and assign text based on when they spoke
-                result_segments = []
-                
-                # Group consecutive speaker segments by the same speaker for better continuity
-                # First, sort speaker segments by start time
-                sorted_speaker_segments = sorted(speaker_segments, key=lambda x: x[0])
-                
-                # DEBUG: Check speaker distribution
-                speakers_present = set([seg[2] for seg in sorted_speaker_segments])
-                print(f"[Job {job_id}] Unique speakers in timeline: {speakers_present}")
-                
-                # Now, distribute text segments according to speaker timeline
-                # We'll use a time-based mapping where we assign text to speakers based on when they were active
-                text_idx = 0
-                
-                # Group text by speaker time slots
-                for start, end, speaker in sorted_speaker_segments:
-                    if text_idx >= len(potential_segments):
-                        break  # No more text to assign
-                    
-                    # Calculate which text segments should belong to this speaker's time slot
-                    slot_duration = end - start
-                    total_duration = audio_duration
-                    
-                    # Calculate the portion of text that falls in this time slot
-                    text_start_idx = int((start / total_duration) * len(potential_segments))
-                    text_end_idx = int((end / total_duration) * len(potential_segments))
-                    
-                    # Ensure indices are valid
-                    text_start_idx = max(text_start_idx, text_idx)
-                    text_end_idx = min(text_end_idx, len(potential_segments))
-                    text_end_idx = max(text_end_idx, text_start_idx + 1)  # Ensure at least one segment
-                    
-                    # Get text segments for this speaker
-                    if text_start_idx < len(potential_segments) and text_start_idx < text_end_idx:
-                        speaker_texts = potential_segments[text_start_idx:text_end_idx]
-                        combined_text = " ".join(speaker_texts).strip()
-                        
-                        if combined_text:
-                            result_segments.append({
-                                'text': combined_text,
-                                'speaker': speaker,
-                                'start_time': start,
-                                'end_time': end
-                            })
-                        
-                        # Update text index to continue from where we left off
-                        text_idx = text_end_idx
-                        print(f"[Job {job_id}] Assigned {len(speaker_texts)} text segments to {speaker} during {start:.2f}s-{end:.2f}s")
-                
-                # If there are remaining text segments that weren't assigned (might happen due to rounding)
-                if text_idx < len(potential_segments):
-                    remaining_texts = potential_segments[text_idx:]
-                    if remaining_texts and result_segments:
-                        # Append to the last speaker's segment
-                        print(f"[Job {job_id}] Assigning {len(remaining_texts)} remaining text segments to the last speaker")
-                        last_segment = result_segments[-1]
-                        last_segment['text'] = last_segment['text'] + " " + " ".join(remaining_texts).strip()
-                        last_segment['text'] = last_segment['text'].strip()
-                    elif remaining_texts:
-                        # If no segments yet, create one with UNKNOWN speaker
-                        result_segments.append({
-                            'text': " ".join(remaining_texts).strip(),
-                            'speaker': "UNKNOWN",
-                            'start_time': 0,
-                            'end_time': audio_duration
-                        })
-            
+        try:
+            asr_model = AutoModel(
+                model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+                model_revision="v2.0.4",
+                vad_model="fsmn-vad",
+                vad_model_revision="v2.0.4",
+                punc_model="ct-punc",  # 标点符号模型
+                punc_model_revision="v2.0.4",
+                disable_update=True
+            )
+        except RuntimeError as e:
+            if "Sizes of tensors must match" in str(e):
+                print(f"[Job {job_id}] Primary model failed with tensor size error, trying fallback model...")
+                asr_model = AutoModel(
+                    model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+                    model_revision="v2.0.4",
+                    punc_model="ct-punc",
+                    punc_model_revision="v2.0.4",
+                )
+            elif "shape" in str(e).lower() or "dimension" in str(e).lower():
+                print(f"[Job {job_id}] Model failed with shape error, trying simpler configuration...")
+                asr_model = AutoModel(
+                    model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+                    punc_model="ct-punc",
+                )
             else:
-                # If no segments found, assign full transcript to UNKNOWN
+                raise e
+        
+        # Process each speaker segment individually to ensure alignment
+        print(f"[Job {job_id}] Processing {len(speaker_segments)} speaker segments for alignment...")
+        
+        # Create temporary files for each segment and transcribe individually
+        import tempfile
+        import soundfile as sf
+        
+        result_segments = []
+        total_coverage = 0
+        
+        for i, (start_time, end_time, speaker_label) in enumerate(speaker_segments):
+            segment_duration = end_time - start_time
+            total_coverage += segment_duration
+            
+            print(f"[Job {job_id}] Processing speaker segment {i+1}/{len(speaker_segments)}: {speaker_label} at {start_time:.2f}s-{end_time:.2f}s ({segment_duration:.2f}s)")
+            
+            # Extract the audio segment
+            segment_start_sample = int(start_time * sample_rate)
+            segment_end_sample = int(end_time * sample_rate)
+            
+            # Ensure we don't go out of bounds
+            segment_end_sample = min(segment_end_sample, len(audio_data))
+            segment_audio = audio_data[segment_start_sample:segment_end_sample]
+            
+            # Skip very short segments (less than 0.1 seconds) to avoid processing errors
+            if len(segment_audio) < sample_rate * 0.1:  # Less than 0.1 seconds
+                print(f"[Job {job_id}] Skipping very short segment {start_time:.2f}s-{end_time:.2f}s")
+                continue
+            
+            # Save the segment temporarily for FunASR processing
+            temp_segment_file = None
+            try:
+                temp_fd, temp_segment_file = tempfile.mkstemp(suffix='.wav')
+                os.close(temp_fd)
+                
+                # Save the segment to the temporary file
+                sf.write(temp_segment_file, segment_audio, sample_rate)
+                
+                # Transcribe just this segment with the model
+                segment_res = asr_model.generate(
+                    input=temp_segment_file,
+                    hotword="",
+                    return_raw_dict=True,
+                    output_dir=None,
+                    batch_size=1,
+                    mode="2pass",
+                )
+                
+                # Extract the transcription result for this segment
+                segment_text = ""
+                segment_timestamps = []
+                
+                # Handle different result formats
+                if isinstance(segment_res, list):
+                    for item in segment_res:
+                        if 'text' in item:
+                            segment_text += item['text'] + " "
+                        elif 'nbest' in item:  # Some models return results in 'nbest' field
+                            if isinstance(item['nbest'], list) and len(item['nbest']) > 0:
+                                segment_text += item['nbest'][0]['sentence'] + " "
+                                # Also check for timestamps in nbest results
+                                if 'timestamp' in item['nbest'][0]:
+                                    segment_timestamps.extend(item['nbest'][0]['timestamp'])
+                        elif 'sentence' in item:  # Some models return results in 'sentence' field
+                            segment_text += item['sentence'] + " "
+                        # Check for word-level timestamp information
+                        if 'timestamp' in item:
+                            segment_timestamps.extend(item['timestamp'])
+                        # Check if result has word information with timestamps
+                        if 'wnd' in item:  # Word-level timing information
+                            segment_timestamps.extend(item['wnd'])
+                else:
+                    if 'text' in segment_res:
+                        segment_text = segment_res['text']
+                    elif 'nbest' in segment_res:  # Some models return results in 'nbest' field
+                        if isinstance(segment_res['nbest'], list) and len(segment_res['nbest']) > 0:
+                            segment_text = segment_res['nbest'][0]['sentence']
+                            # Check for timestamps in nbest results
+                            if 'timestamp' in segment_res['nbest'][0]:
+                                segment_timestamps = segment_res['nbest'][0]['timestamp']
+                    elif 'sentence' in segment_res:  # Some models return results in 'sentence' field
+                        segment_text = segment_res['sentence']
+                    # Check for word-level timestamp information
+                    if 'timestamp' in segment_res:
+                        segment_timestamps = segment_res['timestamp']
+                    # Check for word-level information
+                    if 'wnd' in segment_res:  # Word-level timing information
+                        segment_timestamps = segment_res['wnd']
+                
+                # Clean up the segment text
+                segment_text = segment_text.strip()
+                
+                # Adjust the timestamps to be relative to the original audio file
+                adjusted_timestamps = []
+                for ts in segment_timestamps:
+                    if 'start' in ts and 'end' in ts and 'text' in ts:
+                        adjusted_start = ts['start'] + start_time  # Adjust start time relative to original audio
+                        adjusted_end = ts['end'] + start_time     # Adjust end time relative to original audio
+                        adjusted_timestamps.append({
+                            'start': adjusted_start,
+                            'end': adjusted_end,
+                            'text': ts['text']
+                        })
+                
+                # Add the segment result to our collection
+                if segment_text:
+                    result_segments.append({
+                        'text': segment_text,
+                        'speaker': speaker_label,
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'word_level_info': adjusted_timestamps
+                    })
+                    print(f"[Job {job_id}] Transcribed segment for {speaker_label}: '{segment_text[:100]}...' ({segment_duration:.2f}s)")
+                else:
+                    print(f"[Job {job_id}] No text extracted for segment {i+1}, speaker {speaker_label}")
+                
+            except Exception as e:
+                print(f"[Job {job_id}] Error processing speaker segment {i+1}: {e}")
+                import traceback
+                traceback.print_exc()  # Print full stack trace for debugging
+                # Add an empty segment if there was an error
                 result_segments.append({
-                    'text': full_transcript,
+                    'text': f"[No speech detected for {speaker_label}]",
+                    'speaker': speaker_label,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'word_level_info': []
+                })
+            finally:
+                # Clean up the temporary file
+                if temp_segment_file and os.path.exists(temp_segment_file):
+                    os.remove(temp_segment_file)
+        
+        # Calculate coverage statistics
+        coverage_percentage = (total_coverage / audio_duration) * 100 if audio_duration > 0 else 0
+        print(f"[Job {job_id}] Total speaker coverage: {total_coverage:.2f}s out of {audio_duration:.2f}s ({coverage_percentage:.1f}%)")
+        
+        # If no segments were processed successfully, create a fallback
+        if not result_segments:
+            print(f"[Job {job_id}] No valid segments processed, running full audio transcription as fallback...")
+            # Fallback to the original approach if no segments were processed
+            res = asr_model.generate(
+                input=converted_file,
+                hotword="",
+                return_raw_dict=True,
+                output_dir=None,
+                batch_size=1,
+                mode="2pass",
+            )
+            
+            # Extract the transcription result with punctuation
+            word_level_info = []  # To store word-level timing if available
+            
+            # Handle different result formats from primary and fallback models
+            if isinstance(res, list):
+                for item in res:
+                    if 'text' in item:
+                        full_transcript += item['text'] + " "
+                    elif 'nbest' in item:  # Some models return results in 'nbest' field
+                        if isinstance(item['nbest'], list) and len(item['nbest']) > 0:
+                            full_transcript += item['nbest'][0]['sentence'] + " "
+                            # Also check for timestamps in nbest results
+                            if 'timestamp' in item['nbest'][0]:
+                                word_level_info.extend(item['nbest'][0]['timestamp'])
+                    elif 'sentence' in item:  # Some models return results in 'sentence' field
+                        full_transcript += item['sentence'] + " "
+                    # Check for word-level timestamp information
+                    if 'timestamp' in item:
+                        word_level_info.extend(item['timestamp'])
+                    # Check if result has word information with timestamps
+                    if 'wnd' in item:  # Word-level timing information
+                        word_level_info.extend(item['wnd'])
+            else:
+                if 'text' in res:
+                    full_transcript = res['text']
+                elif 'nbest' in res:  # Some models return results in 'nbest' field
+                    if isinstance(res['nbest'], list) and len(res['nbest']) > 0:
+                        full_transcript = res['nbest'][0]['sentence']
+                        # Check for timestamps in nbest results
+                        if 'timestamp' in res['nbest'][0]:
+                            word_level_info = res['nbest'][0]['timestamp']
+                    elif 'sentence' in res:  # Some models return results in 'sentence' field
+                        full_transcript = res['sentence']
+                    # Check for word-level timestamp information
+                    if 'timestamp' in res:
+                        word_level_info = res['timestamp']
+                    # Check for word-level information
+                    if 'wnd' in res:  # Word-level timing information
+                        word_level_info = res['wnd']
+            
+            # Create a result with UNKNOWN speaker to avoid errors
+            if full_transcript.strip():
+                result_segments.append({
+                    'text': full_transcript.strip(),
                     'speaker': "UNKNOWN",
                     'start_time': 0,
-                    'end_time': audio_duration
+                    'end_time': audio_duration,
+                    'word_level_info': []
                 })
-        
-        # If still no segments, assign full transcript to UNKNOWN
-        if not result_segments:
-            result_segments.append({
-                'text': full_transcript,
-                'speaker': "UNKNOWN",
-                'start_time': 0,
-                'end_time': audio_duration
-            })
-        
+
         # Format the transcript with speakers and punctuation
         formatted_transcript = "\n".join([f"[{seg['speaker']}] {seg['text']}" for seg in result_segments])
         
@@ -601,6 +481,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         # Store the transcript with native punctuation
         crud.update_job_transcript(db, job_id=job_id, transcript=formatted_transcript, timing_info=timing_info_json)
         print(f"[Job {job_id}] Processing completed with speakers: {set([seg['speaker'] for seg in result_segments])}")
+        print(f"[Job {job_id}] Result segments: {len(result_segments)}")
 
     except Exception as e:
         print(f"[Job {job_id}] Processing failed: {e}")
