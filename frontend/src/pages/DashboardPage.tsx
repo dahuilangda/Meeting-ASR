@@ -35,7 +35,7 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
             const response = await apiClient.post('/upload', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
-            onUploadSuccess(response.data);
+            onUploadSuccess(response.data as Job);
             setFile(null); // Reset file input
         } catch (err) {
             setError('File upload failed. Please try again.');
@@ -69,7 +69,7 @@ export function DashboardPage() {
 
     const fetchJobs = () => {
         apiClient.get('/jobs').then(response => {
-            setJobs(response.data);
+            setJobs(response.data as Job[]);
         }).catch(err => {
             setError('Failed to fetch jobs.');
         });

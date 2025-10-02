@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
+import { MarkdownViewer } from '../components/MarkdownViewer';
 
 interface JobDetails {
     id: number;
@@ -36,7 +37,7 @@ export function JobDetailPage() {
     useEffect(() => {
         if (jobId) {
             apiClient.get(`/jobs/${jobId}`).then(response => {
-                setJob(response.data);
+                setJob(response.data as JobDetails);
             }).catch(err => {
                 setError('Failed to fetch job details.');
             });
@@ -54,7 +55,7 @@ export function JobDetailPage() {
         setIsSummarizing(true);
         try {
             const response = await apiClient.post(`/jobs/${jobId}/summarize`);
-            setJob(response.data); // Update job with summary
+            setJob(response.data as JobDetails); // Update job with summary
         } catch (err: unknown) {
             console.error("Summarization failed", err);
             let errorMessage = 'Unknown error';
@@ -77,7 +78,7 @@ export function JobDetailPage() {
             const response = await apiClient.post(`/jobs/${jobId}/translate`, { 
                 target_language: targetLanguage 
             });
-            setTranslatedText(response.data.translated_text);
+            setTranslatedText((response.data as { translated_text: string }).translated_text);
         } catch (err: unknown) {
             console.error("Translation failed", err);
             let errorMessage = 'Unknown error';
@@ -239,7 +240,7 @@ export function JobDetailPage() {
                             <h5 className="card-title">Meeting Summary</h5>
                             
                             {job.summary ? (
-                                <div className="p-3 bg-light rounded" style={{ whiteSpace: 'pre-wrap' }}>{job.summary}</div>
+                                <MarkdownViewer content={job.summary} />
                             ) : isSummarizing ? (
                                 <div className="alert alert-info d-flex align-items-center">
                                     <span className="spinner-border spinner-border-sm me-2" role="status"></span>

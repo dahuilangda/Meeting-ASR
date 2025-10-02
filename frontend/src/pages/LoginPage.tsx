@@ -20,7 +20,7 @@ export function LoginPage() {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             });
             
-            localStorage.setItem('token', response.data.access_token);
+            localStorage.setItem('token', (response.data as { access_token: string }).access_token);
             window.location.href = '/'; // Force reload to re-evaluate auth status
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Login failed');

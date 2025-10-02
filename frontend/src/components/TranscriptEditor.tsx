@@ -21,7 +21,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   initialTranscript, 
   onTranscriptUpdate 
 }) => {
-  const [] = useState<string | null>(initialTranscript);
+  useState<string | null>(initialTranscript);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -30,8 +30,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
-  const [translatedSegments, setTranslatedSegments] = useState<Record<number, string>>({}); // Store translations by segment ID
-  const [isTranslating, setIsTranslating] = useState<boolean>(false);
+  // Removed unused state variables: translatedSegments, isTranslating
   const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
@@ -255,7 +254,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     const fetchJobDetails = async () => {
       try {
         const response = await apiClient.get(`/jobs/${jobId}`);
-        const jobDetails = response.data;
+        const jobDetails: any = response.data;
         
         if (jobDetails.timing_info) {
           try {
@@ -284,7 +283,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           const audioResponse = await apiClient.get(`/jobs/${jobId}/audio`, {
             responseType: 'blob' // Important: get as blob
           });
-          const audioBlob = new Blob([audioResponse.data], { type: audioResponse.headers['content-type'] || 'audio/mpeg' });
+          const audioBlob = new Blob([audioResponse.data as BlobPart], { type: audioResponse.headers['content-type'] || 'audio/mpeg' });
           const audioBlobUrl = URL.createObjectURL(audioBlob);
           
           setAudioUrl(audioBlobUrl);
@@ -401,41 +400,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     setAudioError("Audio file could not be loaded. Either the file is unavailable or there was a connection issue.");
   };
 
-  const handleOptimizeSegment = async (segmentId: number) => {
-    const segment = segments.find(seg => seg.id === segmentId);
-    if (!segment) return;
 
-    try {
-      // Use the job-specific optimization endpoint, mimicking how the full transcript optimization works
-      // We'll send only this segment as if it were the full transcript for the job
-      const response = await apiClient.post(`/jobs/${jobId}/optimize_segment`, {
-        text: segment.text,
-        speaker: segment.speaker
-      }, {
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
 
-      const optimizedText = response.data.optimized_text;
-      
-      // Update the segment with the optimized text
-      const updatedSegments = segments.map(s => 
-        s.id === segmentId 
-          ? { ...s, text: optimizedText } 
-          : s
-      );
-      
-      setSegments(updatedSegments);
-      saveTranscript(updatedSegments);
-    } catch (error) {
-      console.error('Error optimizing segment:', error);
-      // Optionally notify user about the error
-      alert('Failed to optimize segment. Please try again.');
-    }
-  };
 
-  const [targetLanguage, setTargetLanguage] = useState('Chinese');
 
   const handleGenerateSummary = async () => {
     setIsSummarizing(true);
@@ -451,19 +418,14 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   };
 
-  // Translation functionality has been moved to JobDetailPage
-  // This function is kept for potential future use or if needed for inline segment translation
-  const handleTranslate = async () => {
-    // Translation is handled in JobDetailPage now, but keep this for per-segment translation if needed
-    console.log("Translation functionality moved to JobDetailPage");
-  };
+
 
   const handleOptimizeAll = async () => {
     try {
       await apiClient.post(`/jobs/${jobId}/optimize`);
       // Refresh the job details to get the optimized transcript
       const response = await apiClient.get(`/jobs/${jobId}`);
-      const jobDetails = response.data;
+      const jobDetails: any = response.data;
       // Update the segments with the optimized transcript
       if (jobDetails.transcript && jobDetails.timing_info) {
         try {
@@ -768,21 +730,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                 {group.text}
               </div>
               
-              {/* Show translation below the original text if available */}
-              {translatedSegments[group.id] && (
-                <div 
-                  className="mt-2 p-2 bg-light rounded border"
-                  style={{ 
-                    fontSize: '0.85rem',
-                    lineHeight: '1.4',
-                    color: '#555',
-                    borderLeft: '3px solid #0d6efd'
-                  }}
-                >
-                  <small className="text-muted fst-italic">[{targetLanguage} Translation]:</small>
-                  <div>{translatedSegments[group.id]}</div>
-                </div>
-              )}
+
             </div>
           );
         })}

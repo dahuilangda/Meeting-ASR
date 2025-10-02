@@ -25,7 +25,14 @@ export function Chat() {
 
     try {
       const response = await axios.post(`${API_SERVER_URL}/chat`, { messages: newMessages });
-      const assistantMessage = response.data;
+      // Ensure the response data matches the Message interface
+      const responseData: any = response.data;
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: typeof responseData === 'string' ? responseData : 
+                 typeof responseData === 'object' && responseData.content ? responseData.content : 
+                 JSON.stringify(responseData)
+      };
       setMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       console.error("Chat failed:", error);

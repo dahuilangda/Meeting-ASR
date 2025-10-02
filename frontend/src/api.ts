@@ -11,7 +11,11 @@ apiClient.interceptors.request.use(config => {
         if (!config.headers) {
             config.headers = {};
         }
-        config.headers.Authorization = `Bearer ${token}`;
+        // Properly handle the headers assignment using the config properties
+        Object.assign(config.headers, {
+            ...config.headers,
+            Authorization: `Bearer ${token}`
+        });
     }
     return config;
 });
