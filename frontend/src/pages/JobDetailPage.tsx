@@ -27,15 +27,12 @@ export function JobDetailPage() {
     const getInitialTab = () => {
         const hash = window.location.hash;
         if (hash === '#summary') return 'summary';
-        if (hash === '#translation') return 'translation';
         return 'transcript'; // default
     };
     
     const [activeTab, setActiveTab] = useState(getInitialTab);
     
     const [isSummarizing, setIsSummarizing] = useState(false);
-    const [isTranslating, setIsTranslating] = useState(false);
-    const [translatedText, setTranslatedText] = useState('');
     
     useEffect(() => {
         if (jobId) {
@@ -112,29 +109,6 @@ export function JobDetailPage() {
         }
     };
 
-    const handleTranslate = async () => {
-        setActiveTab('translation'); // Switch to translation tab immediately
-        setIsTranslating(true);
-        try {
-            const response = await apiClient.post(`/jobs/${jobId}/translate`, { 
-                target_language: targetLanguage 
-            });
-            setTranslatedText((response.data as { translated_text: string }).translated_text);
-        } catch (err: unknown) {
-            console.error("Translation failed", err);
-            let errorMessage = 'Unknown error';
-            if (err instanceof Error) {
-                errorMessage = err.message;
-            } else if (typeof err === 'object' && err !== null && 'response' in err) {
-                const errorWithResponse = err as { response?: { data?: { detail?: string } } };
-                errorMessage = errorWithResponse.response?.data?.detail || 'Unknown error';
-            }
-            alert(`Failed to translate: ${errorMessage}`);
-        } finally {
-            setIsTranslating(false);
-        }
-    };
-
     if (error) {
         return <div className="container mt-5 alert alert-danger">{error}</div>;
     }
@@ -181,21 +155,13 @@ export function JobDetailPage() {
                                     Meeting Summary
                                 </button>
                             </li>
-                            <li className="nav-item">
-                                <button 
-                                    className={`nav-link ${activeTab === 'translation' ? 'active' : ''}`}
-                                    onClick={() => setActiveTab('translation')}
-                                >
-                                    Translation
-                                </button>
-                            </li>
                         </ul>
                         <div className="d-flex gap-2">
                             <select 
                                 className="form-select form-select-sm" 
                                 value={targetLanguage} 
                                 onChange={e => setTargetLanguage(e.target.value)}
-                                disabled={isTranslating || isSummarizing}
+                                disabled={isSummarizing}
                             >
                                 <option value="Chinese">Chinese</option>
                                 <option value="English">English</option>
@@ -221,22 +187,6 @@ export function JobDetailPage() {
                                     </>
                                 )}
                             </button>
-                            <button 
-                                className="btn btn-outline-info btn-sm"
-                                onClick={handleTranslate}
-                                disabled={isTranslating}
-                            >
-                                {isTranslating ? (
-                                    <>
-                                        <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                                        Translating...
-                                    </>
-                                ) : (
-                                    <>
-                                        <i className="bi bi-translate me-1"></i> Translate
-                                    </>
-                                )}
-                            </button>
                         </div>
                     </div>
                     
@@ -245,20 +195,12 @@ export function JobDetailPage() {
                         <div className={`tab-pane fade ${activeTab === 'transcript' ? 'show active' : ''}`}>
                             <div className="d-flex justify-content-between align-items-center">
                                 <h5 className="card-title">Transcript</h5>
-                                {(isSummarizing || isTranslating) && (
+                                {isSummarizing && (
                                     <small className="text-muted">
-                                        {isSummarizing && (
-                                            <span className="me-2">
-                                                <span className="spinner-border spinner-border-sm me-1" role="status"></span> 
-                                                Generating summary in background...
-                                            </span>
-                                        )}
-                                        {isTranslating && (
-                                            <span>
-                                                <span className="spinner-border spinner-border-sm me-1" role="status"></span> 
-                                                Translating in background...
-                                            </span>
-                                        )}
+                                        <span className="me-2">
+                                            <span className="spinner-border spinner-border-sm me-1" role="status"></span> 
+                                            Generating summary in background...
+                                        </span>
                                     </small>
                                 )}
                             </div>
@@ -334,20 +276,6 @@ export function JobDetailPage() {
                             )}
                         </div>
                         
-                        <div className={`tab-pane fade ${activeTab === 'translation' ? 'show active' : ''}`}>
-                            <h5 className="card-title">Translation</h5>
-                            
-                            {translatedText ? (
-                                <div className="p-3 bg-light rounded" style={{ whiteSpace: 'pre-wrap' }}>{translatedText}</div>
-                            ) : isTranslating ? (
-                                <div className="alert alert-info d-flex align-items-center">
-                                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                    Translating transcript... You can switch tabs, translation will continue in the background.
-                                </div>
-                            ) : (
-                                <div className="alert alert-info">No translation generated yet. Select a language and click the Translate button to create one.</div>
-                            )}
-                        </div>
                     </div>
                 </div>
             </div>

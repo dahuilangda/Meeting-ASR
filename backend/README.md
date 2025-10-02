@@ -1,6 +1,6 @@
 # Meeting ASR Backend
 
-The backend service for the Meeting ASR (Automatic Speech Recognition) application. This is a FastAPI-based server that processes audio files, performs speaker diarization, and generates optimized meeting transcripts with additional features like summarization and translation.
+The backend service for the Meeting ASR (Automatic Speech Recognition) application. This is a FastAPI-based server that processes audio files, performs speaker diarization, and generates optimized meeting transcripts with additional features like summarization.
 
 ## Overview
 
@@ -11,7 +11,6 @@ The backend provides:
 - Speaker diarization using Pyannote.audio
 - LLM-powered transcript optimization
 - Meeting summarization
-- Transcript translation
 
 ## Features
 
@@ -19,7 +18,7 @@ The backend provides:
 - **File Processing**: Upload audio/video files for transcription
 - **ASR & Diarization**: Speech-to-text conversion with speaker identification
 - **Transcript Optimization**: LLM-powered transcript enhancement
-- **Post-Processing**: Meeting summarization and translation capabilities
+- **Post-Processing**: Meeting summarization capabilities
 - **Job Management**: Track processing status and results
 
 ## Tech Stack

@@ -10,7 +10,7 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
 - **AI Transcript Optimization**: One-click optimization with LLM
 - **Interactive Transcript Display**: Speaker-separated transcript with timestamps
 - **Click-to-Play**: Click on transcript segments to jump to corresponding audio
-- **Additional Processing**: Summarization and translation capabilities
+- **Additional Processing**: Summarization capabilities
 - **Responsive Design**: Works on desktop and mobile devices
 
 ## New Features Added
