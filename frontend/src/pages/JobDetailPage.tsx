@@ -103,20 +103,6 @@ export function JobDetailPage() {
                     )}
                     
                     <hr />
-                    <div className="d-flex align-items-center gap-2 mb-3">
-                        <button className="btn btn-info" onClick={handleSummarize} disabled={isSummarizing}>
-                            {isSummarizing ? 'Summarizing...' : 'Generate Summary'}
-                        </button>
-                        <button className="btn btn-success" onClick={handleTranslate} disabled={isTranslating}>
-                            {isTranslating ? 'Translating...' : 'Translate'}
-                        </button>
-                        <select className="form-select w-auto" value={targetLanguage} onChange={e => setTargetLanguage(e.target.value)}>
-                            <option value="Chinese">Chinese</option>
-                            <option value="English">English</option>
-                            <option value="Japanese">Japanese</option>
-                            <option value="French">French</option>
-                        </select>
-                    </div>
 
                     {job.summary && (
                         <div className="mb-3">

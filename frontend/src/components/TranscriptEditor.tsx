@@ -29,14 +29,21 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
-  const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
+  const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editingSpeaker && renameInputRef.current) {
-      renameInputRef.current.focus();
+    if (editingSpeakerForSegment !== null && renameInputRef.current) {
+      // Use setTimeout to ensure the element is rendered before focusing
+      setTimeout(() => {
+        if (renameInputRef.current) {
+          renameInputRef.current.focus();
+          // Select all text for easy editing
+          renameInputRef.current.select();
+        }
+      }, 0);
     }
-  }, [editingSpeaker]);
+  }, [editingSpeakerForSegment]);
   
   const saveTranscript = async (updatedSegments: TranscriptSegment[]) => {
     try {
@@ -49,14 +56,17 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   };
 
   const handleSpeakerNameChange = (oldName: string, newName: string) => {
+    // Find the original speaker name of the group currently being edited
+    // When a user renames a speaker, they want to rename all segments with that speaker name
     const updatedSegments = segments.map(segment => {
       if (segment.speaker === oldName) {
         return { ...segment, speaker: newName };
       }
       return segment;
     });
+    
     setSegments(updatedSegments);
-    setEditingSpeaker(null);
+    setEditingSpeakerForSegment(null);
     saveTranscript(updatedSegments);
   };
 
@@ -422,6 +432,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   };
 
+  const [targetLanguage, setTargetLanguage] = useState('English');
+
   const handleGenerateSummary = async () => {
     try {
       await apiClient.post(`/jobs/${jobId}/summarize`);
@@ -437,12 +449,11 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
 
   const handleTranslate = async () => {
     try {
-      // For now, we'll just translate to English as an example
       const response = await apiClient.post(`/jobs/${jobId}/translate`, {
-        target_language: 'English'
+        target_language: targetLanguage
       });
-      // In a real implementation, you might want to display the translation somewhere
-      alert('Translation completed!');
+      // In a real implementation, you might display the translated text somewhere
+      alert(`Transcript translated to ${targetLanguage} successfully!`);
     } catch (error) {
       console.error('Error translating:', error);
       alert('Failed to translate. Please try again.');
@@ -483,19 +494,35 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   return (
     <div className="transcript-editor" ref={editorRef}>
       <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
-        <div className="d-flex gap-2">
+        <div className="d-flex gap-2 align-items-center">
           <button 
             className="btn btn-outline-primary btn-sm"
             onClick={handleGenerateSummary}
           >
             <i className="bi bi-journal-text me-1"></i> Generate Summary
           </button>
-          <button 
-            className="btn btn-outline-info btn-sm"
-            onClick={handleTranslate}
-          >
-            <i className="bi bi-translate me-1"></i> Translate
-          </button>
+          <div className="d-flex align-items-center gap-2">
+            <select 
+              className="form-select form-select-sm" 
+              value={targetLanguage} 
+              onChange={e => setTargetLanguage(e.target.value)}
+              style={{ width: 'auto' }}
+            >
+              <option value="English">English</option>
+              <option value="Chinese">Chinese</option>
+              <option value="Japanese">Japanese</option>
+              <option value="French">French</option>
+              <option value="Spanish">Spanish</option>
+              <option value="German">German</option>
+              <option value="Korean">Korean</option>
+            </select>
+            <button 
+              className="btn btn-outline-info btn-sm"
+              onClick={handleTranslate}
+            >
+              <i className="bi bi-translate me-1"></i> Translate
+            </button>
+          </div>
           <button 
             className="btn btn-outline-success btn-sm"
             onClick={handleOptimizeAll}
@@ -602,7 +629,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             >
               <div className="segment-header d-flex justify-content-between align-items-center mb-2">
                 <div className="d-flex align-items-center gap-2">
-                  {editingSpeaker === group.speaker ? (
+                  {editingSpeakerForSegment === group.id ? (
                     <div className="d-flex align-items-center">
                       <input 
                         ref={renameInputRef}
@@ -612,7 +639,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           if (e.key === 'Enter') {
                             handleSpeakerNameChange(group.speaker, (e.target as HTMLInputElement).value);
                           } else if (e.key === 'Escape') {
-                            setEditingSpeaker(null);
+                            setEditingSpeakerForSegment(null);
                           }
                         }}
                         onBlur={(e) => {
@@ -620,15 +647,15 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           if (e.target.value !== group.speaker) {
                             handleSpeakerNameChange(group.speaker, e.target.value);
                           } else {
-                            setEditingSpeaker(null);
+                            setEditingSpeakerForSegment(null);
                           }
                         }}
                         className="form-control form-control-sm me-2"
-                        autoFocus
+                        // Remove autoFocus to avoid scrolling issues
                       />
                       <button 
                         className="btn btn-sm btn-outline-secondary"
-                        onClick={() => setEditingSpeaker(null)}
+                        onClick={() => setEditingSpeakerForSegment(null)}
                       >
                         Cancel
                       </button>
@@ -653,7 +680,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           <li key={speaker}>
                             <button 
                               className="dropdown-item"
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation(); // Prevent dropdown from closing before action
                                 handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker);
                               }}
                             >
@@ -668,7 +696,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setEditingSpeaker(group.speaker);
+                              setEditingSpeakerForSegment(group.id);
                             }}
                           >
                             Rename
@@ -702,14 +730,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                   >
                     <i className="bi bi-union me-1"></i>
                     Merge with next
-                  </button>
-                  <button
-                    className="btn btn-sm btn-outline-success"
-                    onClick={() => handleOptimizeSegment(group.id)}
-                    title="Optimize this segment with AI"
-                  >
-                    <i className="bi bi-magic me-1"></i>
-                    AI Optimize
                   </button>
                   <button 
                     className={`btn btn-sm ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
