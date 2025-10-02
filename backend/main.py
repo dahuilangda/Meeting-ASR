@@ -602,6 +602,29 @@ async def translate_job(job_id: int, request: TranslateJobRequest, current_user:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate translation: {e}")
 
+class SegmentTranslateRequest(BaseModel):
+    target_language: str
+    text: str
+
+@app.post("/jobs/{job_id}/translate_segment")
+async def translate_segment(job_id: int, request: SegmentTranslateRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": f"Translate the following text to {request.target_language}."},
+                {"role": "user", "content": request.text}
+            ],
+            model=os.getenv("OPENAI_MODEL_NAME"),
+        )
+        translated_text = chat_completion.choices[0].message.content
+        return {"translated_text": translated_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate translation: {e}")
+
 @app.post("/jobs/{job_id}/optimize", response_model=schemas.Job)
 async def optimize_job_transcript(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)

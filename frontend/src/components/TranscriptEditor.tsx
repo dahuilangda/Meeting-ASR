@@ -30,6 +30,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
+  const [translatedSegments, setTranslatedSegments] = useState<Record<number, string>>({}); // Store translations by segment ID
+  const [isTranslating, setIsTranslating] = useState<boolean>(false);
+  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -432,31 +435,44 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   };
 
-  const [targetLanguage, setTargetLanguage] = useState('English');
+  const [targetLanguage, setTargetLanguage] = useState('Chinese');
 
   const handleGenerateSummary = async () => {
+    setIsSummarizing(true);
     try {
       await apiClient.post(`/jobs/${jobId}/summarize`);
-      // Refresh the job details to get the summary
-      const response = await apiClient.get(`/jobs/${jobId}`);
-      const jobDetails = response.data;
-      alert('Summary generated successfully!');
+      // Instead of showing an alert immediately, the summary would be available in the parent component
+      // This is handled at the job level, so we just notify completion
     } catch (error) {
       console.error('Error generating summary:', error);
       alert('Failed to generate summary. Please try again.');
+    } finally {
+      setIsSummarizing(false);
     }
   };
 
   const handleTranslate = async () => {
+    setIsTranslating(true);
     try {
-      const response = await apiClient.post(`/jobs/${jobId}/translate`, {
-        target_language: targetLanguage
-      });
-      // In a real implementation, you might display the translated text somewhere
-      alert(`Transcript translated to ${targetLanguage} successfully!`);
+      // Translate each segment individually and store the results
+      const newTranslatedSegments: Record<number, string> = {};
+      
+      for (const segment of segments) {
+        // For each segment, call the backend to translate it
+        const response = await apiClient.post(`/jobs/${jobId}/translate_segment`, {
+          target_language: targetLanguage,
+          text: segment.text // Send individual segment text for translation
+        });
+        
+        newTranslatedSegments[segment.id] = response.data.translated_text;
+      }
+      
+      setTranslatedSegments(newTranslatedSegments);
     } catch (error) {
       console.error('Error translating:', error);
       alert('Failed to translate. Please try again.');
+    } finally {
+      setIsTranslating(false);
     }
   };
 
@@ -498,8 +514,18 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           <button 
             className="btn btn-outline-primary btn-sm"
             onClick={handleGenerateSummary}
+            disabled={isSummarizing}
           >
-            <i className="bi bi-journal-text me-1"></i> Generate Summary
+            {isSummarizing ? (
+              <>
+                <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                Generating...
+              </>
+            ) : (
+              <>
+                <i className="bi bi-journal-text me-1"></i> Generate Summary
+              </>
+            )}
           </button>
           <div className="d-flex align-items-center gap-2">
             <select 
@@ -507,9 +533,10 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               value={targetLanguage} 
               onChange={e => setTargetLanguage(e.target.value)}
               style={{ width: 'auto' }}
+              disabled={isTranslating}
             >
-              <option value="English">English</option>
               <option value="Chinese">Chinese</option>
+              <option value="English">English</option>
               <option value="Japanese">Japanese</option>
               <option value="French">French</option>
               <option value="Spanish">Spanish</option>
@@ -519,8 +546,18 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             <button 
               className="btn btn-outline-info btn-sm"
               onClick={handleTranslate}
+              disabled={isTranslating}
             >
-              <i className="bi bi-translate me-1"></i> Translate
+              {isTranslating ? (
+                <>
+                  <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                  Translating...
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-translate me-1"></i> Translate
+                </>
+              )}
             </button>
           </div>
           <button 
@@ -781,6 +818,22 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               >
                 {group.text}
               </div>
+              
+              {/* Show translation below the original text if available */}
+              {translatedSegments[group.id] && (
+                <div 
+                  className="mt-2 p-2 bg-light rounded border"
+                  style={{ 
+                    fontSize: '0.85rem',
+                    lineHeight: '1.4',
+                    color: '#555',
+                    borderLeft: '3px solid #0d6efd'
+                  }}
+                >
+                  <small className="text-muted fst-italic">[{targetLanguage} Translation]:</small>
+                  <div>{translatedSegments[group.id]}</div>
+                </div>
+              )}
             </div>
           );
         })}
