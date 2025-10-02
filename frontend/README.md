@@ -11,6 +11,8 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
 - **Interactive Transcript Display**: Speaker-separated transcript with timestamps
 - **Click-to-Play**: Click on transcript segments to jump to corresponding audio
 - **Additional Processing**: Summarization capabilities
+- **Transcript Editing Persistence**: Save inline transcript edits back to the backend
+- **Meeting Copilot Chat**: Ask contextual questions through an AI assistant dialog
 - **Responsive Design**: Works on desktop and mobile devices
 
 ## New Features Added
@@ -30,6 +32,11 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
 - Click on any transcript segment to jump to the corresponding audio position
 - Audio playback controls integrated with transcript display
 - Visual feedback during audio playback
+
+### Meeting Copilot Chat
+- Floating "会议助理" button opens a Copilot-style conversation window
+- Ask follow-up questions about the transcript or summary using the existing LLM backend
+- Quick prompt chips for action items, risks, and decision summaries
 
 ## Prerequisites
 
@@ -69,7 +76,7 @@ The application will be available at [http://localhost:3000](http://localhost:30
 Runs the app in development mode.
 
 ### `npm test`
-Launches the test runner in interactive watch mode.
+Launches the test runner. Use `CI=true npm test` for a single non-interactive run (recommended in CI).
 
 ### `npm run build`
 Builds the app for production deployment.
@@ -78,6 +85,7 @@ Builds the app for production deployment.
 
 - `src/components/TranscriptEditor.tsx` - Enhanced transcript editor with AI optimization and click-to-play
 - `src/pages/JobDetailPage.tsx` - Updated page with new transcript editor component
+- `src/components/AssistantChat.tsx` - Meeting Copilot chat dialog implementation
 - `src/api.ts` - API client configuration
 - `src/App.tsx` - Main application routing
 
