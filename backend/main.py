@@ -556,9 +556,13 @@ def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_
 # --- Post-processing Endpoints ---
 from pydantic import BaseModel
 from openai import OpenAI
+import httpx
+import os
+
+# Print environment variables for debugging
 print(f'DEBUG: OPENAI_BASE_URL={os.getenv("OPENAI_BASE_URL")}')
 print(f'DEBUG: OPENAI_MODEL_NAME={os.getenv("OPENAI_MODEL_NAME")}')
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+print(f'DEBUG: OPENAI_API_KEY is set: {bool(os.getenv("OPENAI_API_KEY"))}')
 
 class TranslateJobRequest(BaseModel):
     target_language: str
@@ -570,17 +574,54 @@ async def summarize_job(job_id: int, current_user: schemas.User = Depends(get_cu
     if not job.transcript: raise HTTPException(status_code=400, detail="Job has no transcript to summarize.")
 
     try:
+        # Initialize OpenAI client with proper error handling similar to optimize_transcript_with_llm
+        from openai import OpenAI
+        import urllib3
+        import httpx
+        import os
+        
+        # Initialize OpenAI client with proper error handling
+        client = None
+        try:
+            # First, try with default settings
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+        except Exception as init_error:
+            print(f"Initial OpenAI client setup failed: {init_error}")
+            # Handle SSL certificate issues for custom endpoints
+            try:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Create httpx client with SSL verification disabled for custom endpoints
+                http_client = httpx.Client(
+                    verify=False,  # Disable SSL verification for self-signed certificates
+                    timeout=60.0   # Increase timeout
+                )
+                
+                client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"), 
+                    base_url=os.getenv("OPENAI_BASE_URL"),
+                    http_client=http_client
+                )
+            except Exception as e:
+                print(f"Error initializing OpenAI client: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
+        
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "You are an expert meeting assistant. Please summarize the following meeting transcript, identifying key discussion points, decisions made, and action items. Format it clearly."}, 
                 {"role": "user", "content": job.transcript}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
+            timeout=600  # Increase timeout for longer operations
         )
         summary = chat_completion.choices[0].message.content
         crud.update_job_summary(db, job_id=job_id, summary=summary)
-        return job
+        
+        # Return the updated job with the summary
+        updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+        return updated_job
     except Exception as e:
+        print(f"Error in summarize_job: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate summary: {e}")
 
 @app.post("/jobs/{job_id}/translate")

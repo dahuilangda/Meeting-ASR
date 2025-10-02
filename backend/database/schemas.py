@@ -11,6 +11,7 @@ class JobBase(BaseModel):
 class Job(JobBase):
     transcript: Optional[str]
     timing_info: Optional[str]  # JSON string containing timing information
+    summary: Optional[str]  # Summary field added
     class Config:
         from_attributes = True
 
