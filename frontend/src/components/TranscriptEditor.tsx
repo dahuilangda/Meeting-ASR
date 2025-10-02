@@ -150,7 +150,25 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     const textAfter = originalText.slice(startOffset);
 
     const duration = currentSegment.endTime - currentSegment.startTime;
+    // Check for valid duration to prevent NaN
+    if (isNaN(duration) || !isFinite(duration)) {
+      console.error('Invalid duration for segment:', currentSegment);
+      return;
+    }
+    
     const splitTime = currentSegment.startTime + (duration * (startOffset / originalText.length));
+    
+    // Check for valid splitTime to prevent invalid time values
+    if (isNaN(splitTime) || !isFinite(splitTime)) {
+      console.error('Invalid split time calculated:', { 
+        startTime: currentSegment.startTime, 
+        endTime: currentSegment.endTime, 
+        duration, 
+        startOffset, 
+        originalTextLength: originalText.length
+      });
+      return;
+    }
 
     const updatedSegment: TranscriptSegment = {
       ...currentSegment,
@@ -297,16 +315,16 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         return {
           id: index,
           text: match[2],
-          startTime: index * 5, // Placeholder timing
-          endTime: (index + 1) * 5, // Placeholder timing
+          startTime: !isNaN(index * 5) ? index * 5 : 0, // Placeholder timing
+          endTime: !isNaN((index + 1) * 5) ? (index + 1) * 5 : 5, // Placeholder timing
           speaker: match[1]
         };
       }
       return {
         id: index,
         text: line,
-        startTime: index * 5,
-        endTime: (index + 1) * 5,
+        startTime: !isNaN(index * 5) ? index * 5 : 0,
+        endTime: !isNaN((index + 1) * 5) ? (index + 1) * 5 : 5,
         speaker: 'Unknown'
       };
     });
@@ -660,7 +678,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                     </div>
                   )}
                   <small className="text-muted" style={{ fontSize: '0.75rem' }}>
-                    {new Date(group.startTime * 1000).toISOString().substr(11, 8)} - {new Date(group.endTime * 1000).toISOString().substr(11, 8)}
+                    {isNaN(group.startTime) || !isFinite(group.startTime) ? '00:00:00' : new Date(group.startTime * 1000).toISOString().substr(11, 8)} - {isNaN(group.endTime) || !isFinite(group.endTime) ? '00:00:00' : new Date(group.endTime * 1000).toISOString().substr(11, 8)}
                   </small>
                 </div>
                 <div className='d-flex align-items-center gap-2'>
