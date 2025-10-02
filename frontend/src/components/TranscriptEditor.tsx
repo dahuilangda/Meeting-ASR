@@ -7,22 +7,7 @@ export interface TranscriptSegment {
   startTime: number;
   endTime: number;
   speaker: string;
-}
-
-interface JobDetails {
-  id: number;
-  filename: string;
-  status: string;
-  created_at: string;
-  transcript: string | null;
-  timing_info: string | null; // JSON string containing timing information
-}
-
-interface TimingInfoItem {
-  speaker: string;
-  text: string;
-  start_time: number;
-  end_time: number;
+  doNotMergeWithPrevious?: boolean;
 }
 
 interface TranscriptEditorProps {
@@ -31,19 +16,141 @@ interface TranscriptEditorProps {
   onTranscriptUpdate: (updatedTranscript: string) => void;
 }
 
-export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({ 
+export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   jobId, 
   initialTranscript, 
   onTranscriptUpdate 
 }) => {
-  const [, setTranscript] = useState<string | null>(initialTranscript);
+  const [] = useState<string | null>(initialTranscript);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
-  const [isOptimizing, setIsOptimizing] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
+  const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
+  const saveTranscript = async (updatedSegments: TranscriptSegment[]) => {
+    try {
+      await apiClient.post(`/jobs/${jobId}/transcript`, {
+        transcript: updatedSegments,
+      });
+    } catch (error) {
+      console.error('Error saving transcript:', error);
+    }
+  };
+
+  const handleSpeakerNameChange = (oldName: string, newName: string) => {
+    const updatedSegments = segments.map(segment => {
+      if (segment.speaker === oldName) {
+        return { ...segment, speaker: newName };
+      }
+      return segment;
+    });
+    setSegments(updatedSegments);
+    setEditingSpeaker(null);
+    saveTranscript(updatedSegments);
+  };
+
+  const handleDeleteSegment = (segmentId: number) => {
+    const updatedSegments = segments.filter(segment => segment.id !== segmentId);
+    setSegments(updatedSegments);
+    saveTranscript(updatedSegments);
+  };
+
+  const handleMergeSegment = (segmentId: number) => {
+    const segmentIndex = segments.findIndex(segment => segment.id === segmentId);
+    if (segmentIndex === -1 || segmentIndex === segments.length - 1) {
+      return; // Cannot merge last segment
+    }
+
+    const currentSegment = segments[segmentIndex];
+    const nextSegment = segments[segmentIndex + 1];
+
+    const mergedSegment: TranscriptSegment = {
+      ...currentSegment,
+      text: currentSegment.text + ' ' + nextSegment.text,
+      endTime: nextSegment.endTime,
+    };
+
+    const updatedSegments = [
+      ...segments.slice(0, segmentIndex),
+      mergedSegment,
+      ...segments.slice(segmentIndex + 2),
+    ];
+
+    setSegments(updatedSegments);
+    saveTranscript(updatedSegments);
+  };
+
+  const handleSplitSegment = (segmentId: number) => {
+    console.log('Splitting segment:', segmentId);
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      console.log('No selection or range count is zero');
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const { startOffset, startContainer } = range;
+    console.log('Range:', range, 'Start offset:', startOffset, 'Start container:', startContainer);
+
+    if (!startContainer || !startContainer.parentElement?.isContentEditable) {
+      console.log('Start container is not content editable');
+      return;
+    }
+
+    const segmentIndex = segments.findIndex(segment => segment.id === segmentId);
+    console.log('Segment index:', segmentIndex);
+    if (segmentIndex === -1) return;
+
+    const currentSegment = segments[segmentIndex];
+    const originalText = currentSegment.text;
+    console.log('Current segment:', currentSegment);
+
+    if (startOffset === 0 || startOffset === originalText.length) {
+      console.log('Cannot split at the beginning or end');
+      return;
+    }
+
+    const textBefore = originalText.slice(0, startOffset);
+    const textAfter = originalText.slice(startOffset);
+
+    const duration = currentSegment.endTime - currentSegment.startTime;
+    const splitTime = currentSegment.startTime + (duration * (startOffset / originalText.length));
+
+    const updatedSegment: TranscriptSegment = {
+      ...currentSegment,
+      text: textBefore,
+      endTime: splitTime,
+    };
+
+    const newSegment: TranscriptSegment = {
+      id: Date.now(), // Simple unique ID generation
+      text: textAfter,
+      startTime: splitTime,
+      endTime: currentSegment.endTime,
+      speaker: currentSegment.speaker,
+      doNotMergeWithPrevious: true,
+    };
+
+    const updatedSegments = [
+      ...segments.slice(0, segmentIndex),
+      updatedSegment,
+      newSegment,
+      ...segments.slice(segmentIndex + 1),
+    ];
+    console.log('Updated segments:', updatedSegments);
+
+    setSegments(updatedSegments);
+    saveTranscript(updatedSegments);
+  };
+
+  const handleEditClick = (segment: TranscriptSegment) => {
+    setEditingSegmentId(segment.id);
+  };
+
+  const uniqueSpeakers = [...new Set(segments.map(segment => segment.speaker))];
 
   // Group consecutive segments by the same speaker for better presentation
   const groupedSegments = segments.reduce((acc, current) => {
@@ -58,7 +165,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       });
     } else {
       const lastGroup = acc[acc.length - 1];
-      if (lastGroup.speaker === current.speaker) {
+      if (lastGroup.speaker === current.speaker && !current.doNotMergeWithPrevious) {
         // Same speaker as previous, merge the segments
         lastGroup.text += ' ' + current.text;
         lastGroup.endTime = current.endTime;
@@ -84,12 +191,12 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     const fetchJobDetails = async () => {
       try {
         const response = await apiClient.get(`/jobs/${jobId}`);
-        const jobDetails: JobDetails = response.data;
+        const jobDetails = response.data;
         
         if (jobDetails.timing_info) {
           try {
-            const timingData: TimingInfoItem[] = JSON.parse(jobDetails.timing_info);
-            const parsedSegments: TranscriptSegment[] = timingData.map((item, index) => ({
+            const timingData = JSON.parse(jobDetails.timing_info);
+            const parsedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
               id: index,
               text: item.text,
               startTime: item.start_time,
@@ -137,7 +244,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     fetchJobDetails();
   }, [jobId, initialTranscript]);
 
-  // Effect to handle cleanup of previous audio URL
   useEffect(() => {
     // This effect runs when audioUrl changes - clean up previous URL
     return () => {
@@ -173,46 +279,20 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     });
   };
 
-  const handleOptimize = async () => {
-    if (!jobId) return;
-    
-    setIsOptimizing(true);
-    try {
-      const response = await apiClient.post(`/jobs/${jobId}/optimize`);
-      setTranscript(response.data.transcript);
-      onTranscriptUpdate(response.data.transcript || '');
-      
-      // Refresh timing info after optimization
-      if (response.data.timing_info) {
-        try {
-          const timingData: TimingInfoItem[] = JSON.parse(response.data.timing_info);
-          const parsedSegments: TranscriptSegment[] = timingData.map((item, index) => ({
-            id: index,
-            text: item.text,
-            startTime: item.start_time,
-            endTime: item.end_time,
-            speaker: item.speaker
-          }));
-          setSegments(parsedSegments);
-        } catch (error) {
-          console.error("Error parsing timing info after optimization:", error);
-        }
-      }
-    } catch (err) {
-      console.error("Optimization failed", err);
-    } finally {
-      setIsOptimizing(false);
-    }
-  };
+  const editorRef = useRef<HTMLDivElement>(null);
 
-  const handleSegmentClick = (startTime: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = startTime;
-      audioRef.current.play();
-      setIsPlaying(true);
-      setCurrentSpeakerPlaying(null); // Reset individual speaker playback state when clicking segment
-    }
-  };
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (editorRef.current && !editorRef.current.contains(event.target as Node)) {
+        setEditingSegmentId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const handleSpeakerPlay = (startTime: number, segmentId: number) => {
     if (audioRef.current) {
@@ -258,17 +338,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   };
 
   return (
-    <div className="transcript-editor">
+    <div className="transcript-editor" ref={editorRef}>
       <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
-        <button 
-          className="btn btn-primary" 
-          onClick={handleOptimize} 
-          disabled={isOptimizing}
-          title="Optimize transcript with advanced AI"
-        >
-          {isOptimizing ? 'Optimizing...' : 'Optimize with AI'}
-        </button>
-        
         <div className="d-flex align-items-center gap-2 ms-auto">
           {audioUrl && !isAudioLoading ? (
             <>
@@ -352,34 +423,98 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           const bgColor = getSpeakerColor(group.speaker);
           const borderColor = getSpeakerBorderColor(group.speaker);
           const isCurrentlyPlaying = currentSpeakerPlaying === group.id;
+          const isEditing = editingSegmentId === group.id;
           
           return (
             <div 
               key={group.id} 
-              className="transcript-segment p-3 mb-3 rounded border"
+              className={`transcript-segment p-3 mb-3 rounded border ${isEditing ? 'border-primary' : ''}`}
               style={{ 
                 fontSize: '0.9rem',
                 backgroundColor: bgColor,
-                borderColor: borderColor,
+                borderColor: isEditing ? '#007bff' : borderColor,
                 borderLeftWidth: '4px',
                 boxShadow: isCurrentlyPlaying ? '0 0 8px rgba(0,0,0,0.2)' : 'none'
               }}
             >
               <div className="segment-header d-flex justify-content-between align-items-center mb-2">
                 <div className="d-flex align-items-center gap-2">
-                  <span className="badge rounded-pill" 
+                  {editingSpeaker === group.speaker ? (
+                    <input 
+                      type="text"
+                      defaultValue={group.speaker}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleSpeakerNameChange(group.speaker, (e.target as HTMLInputElement).value);
+                        }
+                      }}
+                      onBlur={() => setEditingSpeaker(null)}
+                      autoFocus
+                    />
+                  ) : (
+                    <div className="dropdown">
+                      <button 
+                        className="btn btn-sm dropdown-toggle" 
+                        type="button" 
+                        data-bs-toggle="dropdown" 
+                        aria-expanded="false"
                         style={{ 
                           backgroundColor: borderColor,
                           color: '#000',
                           fontSize: '0.8rem' 
-                        }}>
-                    {group.speaker}
-                  </span>
+                        }}
+                      >
+                        {group.speaker}
+                      </button>
+                      <ul className="dropdown-menu">
+                        {uniqueSpeakers.map(speaker => (
+                          <li key={speaker}>
+                            <button 
+                              className="dropdown-item"
+                              onClick={() => handleSpeakerNameChange(group.speaker, speaker)}
+                            >
+                              {speaker}
+                            </button>
+                          </li>
+                        ))}
+                        <li><hr className="dropdown-divider" /></li>
+                        <li>
+                          <button 
+                            className="dropdown-item"
+                            onClick={() => setEditingSpeaker(group.speaker)}
+                          >
+                            Rename
+                          </button>
+                        </li>
+                      </ul>
+                    </div>
+                  )}
                   <small className="text-muted" style={{ fontSize: '0.75rem' }}>
                     {new Date(group.startTime * 1000).toISOString().substr(11, 8)} - {new Date(group.endTime * 1000).toISOString().substr(11, 8)}
                   </small>
                 </div>
-                <div>
+                <div className='d-flex align-items-center gap-2'>
+                  <button
+                    className="btn btn-sm btn-outline-primary"
+                    onClick={() => handleSplitSegment(group.id)}
+                  >
+                    <i className="bi bi-scissors me-1"></i>
+                    Split
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline-danger"
+                    onClick={() => handleDeleteSegment(group.id)}
+                  >
+                    <i className="bi bi-trash-fill me-1"></i>
+                    Delete
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() => handleMergeSegment(group.id)}
+                  >
+                    <i className="bi bi-union me-1"></i>
+                    Merge with next
+                  </button>
                   <button 
                     className={`btn btn-sm ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
                     onClick={() => isCurrentlyPlaying ? handleSpeakerPause() : handleSpeakerPlay(group.startTime, group.id)}
@@ -402,16 +537,34 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                   </button>
                 </div>
               </div>
-              <p 
+              <div 
+                contentEditable={isEditing}
+                suppressContentEditableWarning={true}
                 className="mb-0" 
                 style={{ 
                   lineHeight: '1.5',
-                  cursor: 'pointer'
+                  cursor: isEditing ? 'text' : 'pointer',
+                  outline: isEditing ? '1px solid #007bff' : 'none',
+                  padding: isEditing ? '0.5rem' : '0',
+                  borderRadius: isEditing ? '0.25rem' : '0',
                 }}
-                onClick={() => handleSegmentClick(group.startTime)}
+                onBlur={(e) => {
+                  if (!e.relatedTarget || !editorRef.current?.contains(e.relatedTarget as Node)) {
+                    const updatedSegments = segments.map(segment => {
+                      if (segment.id === group.id) {
+                        return { ...segment, text: e.target.innerText };
+                      }
+                      return segment;
+                    });
+                    setSegments(updatedSegments);
+                    saveTranscript(updatedSegments);
+                    setEditingSegmentId(null);
+                  }
+                }}
+                onClick={() => !isEditing && handleEditClick(group)}
               >
                 {group.text}
-              </p>
+              </div>
             </div>
           );
         })}
