@@ -41,14 +41,37 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   };
 
   const handleSpeakerNameChange = (oldName: string, newName: string) => {
-    const updatedSegments = segments.map(segment => {
+    const updatedSegments = segments.map((segment, index) => {
       if (segment.speaker === oldName) {
-        return { ...segment, speaker: newName };
+        const nextSegment = segments[index + 1];
+        if (nextSegment) {
+          nextSegment.doNotMergeWithPrevious = true;
+        }
+        return { ...segment, speaker: newName, doNotMergeWithPrevious: true };
       }
       return segment;
     });
     setSegments(updatedSegments);
     setEditingSpeaker(null);
+    saveTranscript(updatedSegments);
+  };
+
+  const handleSegmentSpeakerChange = (segmentIds: number[], newName: string) => {
+    const updatedSegments = segments.map(segment => {
+      if (segmentIds.includes(segment.id)) {
+        return { ...segment, speaker: newName, doNotMergeWithPrevious: true };
+      }
+      return segment;
+    });
+
+    // Prevent merging with the next segment
+    const lastSegmentId = segmentIds[segmentIds.length - 1];
+    const lastSegmentIndex = updatedSegments.findIndex(s => s.id === lastSegmentId);
+    if (lastSegmentIndex !== -1 && lastSegmentIndex < updatedSegments.length - 1) {
+      updatedSegments[lastSegmentIndex + 1].doNotMergeWithPrevious = true;
+    }
+
+    setSegments(updatedSegments);
     saveTranscript(updatedSegments);
   };
 
@@ -471,7 +494,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           <li key={speaker}>
                             <button 
                               className="dropdown-item"
-                              onClick={() => handleSpeakerNameChange(group.speaker, speaker)}
+                              onClick={() => handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker)}
                             >
                               {speaker}
                             </button>
