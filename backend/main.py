@@ -631,16 +631,50 @@ async def translate_job(job_id: int, request: TranslateJobRequest, current_user:
     if not job.transcript: raise HTTPException(status_code=400, detail="Job has no transcript to translate.")
 
     try:
+        # Initialize OpenAI client with proper error handling similar to optimize_transcript_with_llm
+        from openai import OpenAI
+        import urllib3
+        import httpx
+        import os
+        
+        # Initialize OpenAI client with proper error handling
+        client = None
+        try:
+            # First, try with default settings
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+        except Exception as init_error:
+            print(f"Initial OpenAI client setup failed: {init_error}")
+            # Handle SSL certificate issues for custom endpoints
+            try:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Create httpx client with SSL verification disabled for custom endpoints
+                http_client = httpx.Client(
+                    verify=False,  # Disable SSL verification for self-signed certificates
+                    timeout=60.0   # Increase timeout
+                )
+                
+                client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"), 
+                    base_url=os.getenv("OPENAI_BASE_URL"),
+                    http_client=http_client
+                )
+            except Exception as e:
+                print(f"Error initializing OpenAI client: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
+        
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": f"Translate the following text to {request.target_language}."},
                 {"role": "user", "content": job.transcript}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
+            timeout=600  # Increase timeout for longer operations
         )
         translated_text = chat_completion.choices[0].message.content
         return {"translated_text": translated_text}
     except Exception as e:
+        print(f"Error in translate_job: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate translation: {e}")
 
 class SegmentTranslateRequest(BaseModel):
@@ -654,16 +688,50 @@ async def translate_segment(job_id: int, request: SegmentTranslateRequest, curre
         raise HTTPException(status_code=404, detail="Job not found")
     
     try:
+        # Initialize OpenAI client with proper error handling similar to optimize_transcript_with_llm
+        from openai import OpenAI
+        import urllib3
+        import httpx
+        import os
+        
+        # Initialize OpenAI client with proper error handling
+        client = None
+        try:
+            # First, try with default settings
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+        except Exception as init_error:
+            print(f"Initial OpenAI client setup failed: {init_error}")
+            # Handle SSL certificate issues for custom endpoints
+            try:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Create httpx client with SSL verification disabled for custom endpoints
+                http_client = httpx.Client(
+                    verify=False,  # Disable SSL verification for self-signed certificates
+                    timeout=60.0   # Increase timeout
+                )
+                
+                client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"), 
+                    base_url=os.getenv("OPENAI_BASE_URL"),
+                    http_client=http_client
+                )
+            except Exception as e:
+                print(f"Error initializing OpenAI client: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
+        
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": f"Translate the following text to {request.target_language}."},
                 {"role": "user", "content": request.text}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
+            timeout=600  # Increase timeout for longer operations
         )
         translated_text = chat_completion.choices[0].message.content
         return {"translated_text": translated_text}
     except Exception as e:
+        print(f"Error in translate_segment: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate translation: {e}")
 
 @app.post("/jobs/{job_id}/optimize", response_model=schemas.Job)
