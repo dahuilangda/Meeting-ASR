@@ -177,9 +177,9 @@ def optimize_transcript_with_llm(transcript: str) -> str:
                 {"role": "system", "content": "You are an expert at improving speech-to-text transcriptions. You maintain speaker labels while improving readability, fixing obvious errors, and making the conversation more coherent."},
                 {"role": "user", "content": prompt}
             ],
-            model=os.getenv("OPENAI_MODEL_NAME") or "gpt-3.5-turbo",  # Fallback to gpt-3.5-turbo if not specified
+            model=os.getenv("OPENAI_MODEL_NAME"),
             temperature=0.3,  # Lower temperature for more consistent output
-            timeout=60  # Increase timeout for longer operations
+            timeout=600  # Increase timeout for longer operations
         )
         
         optimized_text = chat_completion.choices[0].message.content

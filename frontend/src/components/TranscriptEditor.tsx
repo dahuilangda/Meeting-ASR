@@ -451,29 +451,11 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   };
 
+  // Translation functionality has been moved to JobDetailPage
+  // This function is kept for potential future use or if needed for inline segment translation
   const handleTranslate = async () => {
-    setIsTranslating(true);
-    try {
-      // Translate each segment individually and store the results
-      const newTranslatedSegments: Record<number, string> = {};
-      
-      for (const segment of segments) {
-        // For each segment, call the backend to translate it
-        const response = await apiClient.post(`/jobs/${jobId}/translate_segment`, {
-          target_language: targetLanguage,
-          text: segment.text // Send individual segment text for translation
-        });
-        
-        newTranslatedSegments[segment.id] = response.data.translated_text;
-      }
-      
-      setTranslatedSegments(newTranslatedSegments);
-    } catch (error) {
-      console.error('Error translating:', error);
-      alert('Failed to translate. Please try again.');
-    } finally {
-      setIsTranslating(false);
-    }
+    // Translation is handled in JobDetailPage now, but keep this for per-segment translation if needed
+    console.log("Translation functionality moved to JobDetailPage");
   };
 
   const handleOptimizeAll = async () => {
@@ -527,39 +509,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               </>
             )}
           </button>
-          <div className="d-flex align-items-center gap-2">
-            <select 
-              className="form-select form-select-sm" 
-              value={targetLanguage} 
-              onChange={e => setTargetLanguage(e.target.value)}
-              style={{ width: 'auto' }}
-              disabled={isTranslating}
-            >
-              <option value="Chinese">Chinese</option>
-              <option value="English">English</option>
-              <option value="Japanese">Japanese</option>
-              <option value="French">French</option>
-              <option value="Spanish">Spanish</option>
-              <option value="German">German</option>
-              <option value="Korean">Korean</option>
-            </select>
-            <button 
-              className="btn btn-outline-info btn-sm"
-              onClick={handleTranslate}
-              disabled={isTranslating}
-            >
-              {isTranslating ? (
-                <>
-                  <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                  Translating...
-                </>
-              ) : (
-                <>
-                  <i className="bi bi-translate me-1"></i> Translate
-                </>
-              )}
-            </button>
-          </div>
           <button 
             className="btn btn-outline-success btn-sm"
             onClick={handleOptimizeAll}
