@@ -34,3 +34,22 @@ apiClient.interceptors.response.use(
         return Promise.reject(error);
     }
 );
+
+export type ChatRole = 'user' | 'assistant' | 'system';
+
+export interface ChatMessagePayload {
+    role: ChatRole;
+    content: string;
+}
+
+export interface ChatResponse {
+    reply: string;
+}
+
+export const sendAssistantChat = async (messages: ChatMessagePayload[], systemPrompt?: string) => {
+    const response = await apiClient.post<ChatResponse>('/assistant/chat', {
+        messages,
+        systemPrompt,
+    });
+    return response.data;
+};

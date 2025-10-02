@@ -11,6 +11,7 @@ The backend provides:
 - Speaker diarization using Pyannote.audio
 - LLM-powered transcript optimization
 - Meeting summarization
+- Copilot-style chat assistance for meeting follow-up
 
 ## Features
 
@@ -19,6 +20,7 @@ The backend provides:
 - **ASR & Diarization**: Speech-to-text conversion with speaker identification
 - **Transcript Optimization**: LLM-powered transcript enhancement
 - **Post-Processing**: Meeting summarization capabilities
+- **Copilot Assistant**: Conversational endpoint to answer questions about transcripts and summaries
 - **Job Management**: Track processing status and results
 
 ## Tech Stack
@@ -115,8 +117,10 @@ DATABASE_URL=sqlite:///./sqlite.db
 
 ### Post-Processing
 - `POST /jobs/{job_id}/summarize` - Generate summary for a transcript (requires auth)
-- `POST /jobs/{job_id}/translate` - Translate transcript to target language (requires auth)
 - `POST /jobs/{job_id}/optimize` - Optimize transcript using LLM (requires auth)
+- `POST /jobs/{job_id}/transcript` - Persist transcript edits and timing metadata (requires auth)
+- `POST /jobs/{job_id}/update_summary` - Save manual summary edits (requires auth)
+- `POST /assistant/chat` - Ask the meeting copilot questions about transcripts or summaries (requires auth)
 
 ## Architecture
 

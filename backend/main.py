@@ -554,7 +554,7 @@ def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_
     return RedirectResponse(url=f"/uploads/{job.filename}")
 
 # --- Post-processing Endpoints ---
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import OpenAI
 import httpx
 import os
@@ -563,6 +563,28 @@ import os
 print(f'DEBUG: OPENAI_BASE_URL={os.getenv("OPENAI_BASE_URL")}')
 print(f'DEBUG: OPENAI_MODEL_NAME={os.getenv("OPENAI_MODEL_NAME")}')
 print(f'DEBUG: OPENAI_API_KEY is set: {bool(os.getenv("OPENAI_API_KEY"))}')
+
+def create_openai_client():
+    """Initialize OpenAI client with fallback handling for custom base URLs."""
+    import urllib3
+
+    client = None
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+    except Exception as init_error:
+        print(f"Initial OpenAI client setup failed: {init_error}")
+        try:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            http_client = httpx.Client(verify=False, timeout=60.0)
+            client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL"),
+                http_client=http_client
+            )
+        except Exception as e:
+            print(f"Fallback OpenAI client setup failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
+    return client
 
 class SummarizeJobRequest(BaseModel):
     target_language: str = "Chinese"  # Default to Chinese if not specified
@@ -662,6 +684,34 @@ async def optimize_job_transcript(job_id: int, current_user: schemas.User = Depe
 class UpdateSummaryRequest(BaseModel):
     summary: str
 
+class TranscriptSegmentUpdate(BaseModel):
+    id: int | None = None
+    text: str
+    speaker: str | None = None
+    start_time: float | None = Field(default=None, alias="startTime")
+    end_time: float | None = Field(default=None, alias="endTime")
+    do_not_merge_with_previous: bool | None = Field(default=None, alias="doNotMergeWithPrevious")
+
+    class Config:
+        allow_population_by_field_name = True
+
+class TranscriptUpdateRequest(BaseModel):
+    transcript: List[TranscriptSegmentUpdate]
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    system_prompt: str | None = Field(default=None, alias="systemPrompt")
+
+    class Config:
+        allow_population_by_field_name = True
+
+class ChatResponse(BaseModel):
+    reply: str
+
 @app.post("/jobs/{job_id}/update_summary")
 async def update_summary(job_id: int, request: UpdateSummaryRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
@@ -675,6 +725,83 @@ async def update_summary(job_id: int, request: UpdateSummaryRequest, current_use
         return updated_job
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update summary: {e}")
+
+@app.post("/jobs/{job_id}/transcript", response_model=schemas.Job)
+async def update_job_transcript_endpoint(job_id: int, request: TranscriptUpdateRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    import json
+
+    transcript_lines: List[str] = []
+    timing_entries: List[dict] = []
+
+    for segment in request.transcript:
+        text = (segment.text or "").strip()
+        if not text:
+            continue
+
+        speaker = (segment.speaker or "Unknown").strip() or "Unknown"
+        transcript_lines.append(f"[{speaker}] {text}")
+        timing_entries.append({
+            "speaker": speaker,
+            "text": text,
+            "start_time": segment.start_time if segment.start_time is not None else 0,
+            "end_time": segment.end_time if segment.end_time is not None else (segment.start_time if segment.start_time is not None else 0),
+        })
+
+    transcript_text = "\n".join(transcript_lines)
+    timing_json = json.dumps(timing_entries, ensure_ascii=False)
+
+    updated_job = crud.update_job_transcript(db, job_id=job_id, transcript=transcript_text, timing_info=timing_json)
+    if not updated_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    refreshed_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not refreshed_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return refreshed_job
+
+@app.post("/assistant/chat", response_model=ChatResponse)
+async def assistant_chat(request: ChatRequest, current_user: schemas.User = Depends(get_current_user)):
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="At least one message is required.")
+
+    client = create_openai_client()
+
+    conversation: List[dict] = []
+    system_prompt = (request.system_prompt or "You are a knowledgeable meeting assistant who helps users understand transcripts, summaries, and provides actionable guidance. Provide concise, helpful answers.").strip()
+    if system_prompt:
+        conversation.append({"role": "system", "content": system_prompt})
+
+    has_user_message = False
+    for message in request.messages:
+        role = (message.role or "user").lower()
+        if role not in {"user", "assistant", "system"}:
+            role = "user"
+        content = (message.content or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            has_user_message = True
+        conversation.append({"role": role, "content": content})
+
+    if not has_user_message:
+        raise HTTPException(status_code=400, detail="Chat requires at least one user message.")
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=conversation,
+            model=os.getenv("OPENAI_MODEL_NAME"),
+            timeout=600,
+            temperature=0.4
+        )
+        reply = chat_completion.choices[0].message.content
+        return ChatResponse(reply=reply)
+    except Exception as e:
+        print(f"Error in assistant_chat: {e}")
+        raise HTTPException(status_code=500, detail=f"Assistant chat failed: {e}")
 
 @app.post("/jobs/{job_id}/optimize_segment", response_model=dict)
 async def optimize_segment(job_id: int, request: dict, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):

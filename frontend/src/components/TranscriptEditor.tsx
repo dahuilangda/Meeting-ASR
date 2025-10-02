@@ -31,7 +31,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
   // Removed unused state variables: translatedSegments, isTranslating
-  const [isSummarizing, setIsSummarizing] = useState<boolean>(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -47,11 +46,33 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   }, [editingSpeakerForSegment]);
   
+  const buildTranscriptPayload = (updatedSegments: TranscriptSegment[]) => {
+    return {
+      transcript: updatedSegments.map((segment, index) => {
+        const safeStart = Number.isFinite(segment.startTime) ? segment.startTime : index * 5;
+        const safeEnd = Number.isFinite(segment.endTime) ? segment.endTime : safeStart + 5;
+        return {
+          line_number: index,
+          text: segment.text || '',
+          speaker: segment.speaker || 'Unknown',
+          start_time: safeStart,
+          end_time: safeEnd,
+          do_not_merge_with_previous: Boolean(segment.doNotMergeWithPrevious),
+        };
+      }),
+    };
+  };
+
   const saveTranscript = async (updatedSegments: TranscriptSegment[]) => {
     try {
-      await apiClient.post(`/jobs/${jobId}/transcript`, {
-        transcript: updatedSegments,
+      const payload = buildTranscriptPayload(updatedSegments);
+      await apiClient.post(`/jobs/${jobId}/transcript`, payload, {
+        headers: { 'Content-Type': 'application/json' }
       });
+      const updatedTranscriptText = updatedSegments
+        .map(segment => `[${segment.speaker || 'Unknown'}] ${segment.text}`)
+        .join('\n');
+      onTranscriptUpdate(updatedTranscriptText);
     } catch (error) {
       console.error('Error saving transcript:', error);
     }
@@ -264,7 +285,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               text: item.text,
               startTime: item.start_time,
               endTime: item.end_time,
-              speaker: item.speaker
+              speaker: item.speaker,
+              doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
             }));
             setSegments(parsedSegments);
           } catch (error) {
@@ -400,26 +422,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     setAudioError("Audio file could not be loaded. Either the file is unavailable or there was a connection issue.");
   };
 
-
-
-
-
-  const handleGenerateSummary = async () => {
-    setIsSummarizing(true);
-    try {
-      await apiClient.post(`/jobs/${jobId}/summarize`);
-      // Instead of showing an alert immediately, the summary would be available in the parent component
-      // This is handled at the job level, so we just notify completion
-    } catch (error) {
-      console.error('Error generating summary:', error);
-      alert('Failed to generate summary. Please try again.');
-    } finally {
-      setIsSummarizing(false);
-    }
-  };
-
-
-
   const handleOptimizeAll = async () => {
     try {
       await apiClient.post(`/jobs/${jobId}/optimize`);
@@ -435,7 +437,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             text: item.text,
             startTime: item.start_time,
             endTime: item.end_time,
-            speaker: item.speaker
+            speaker: item.speaker,
+            doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
           }));
           setSegments(parsedSegments);
         } catch (error) {
@@ -455,22 +458,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     <div className="transcript-editor" ref={editorRef}>
       <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
         <div className="d-flex gap-2 align-items-center">
-          <button 
-            className="btn btn-outline-primary btn-sm"
-            onClick={handleGenerateSummary}
-            disabled={isSummarizing}
-          >
-            {isSummarizing ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                Generating...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-journal-text me-1"></i> Generate Summary
-              </>
-            )}
-          </button>
           <button 
             className="btn btn-outline-success btn-sm"
             onClick={handleOptimizeAll}

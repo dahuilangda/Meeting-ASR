@@ -4,6 +4,7 @@ import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import MarkdownEditor from '@uiw/react-markdown-editor';
+import { AssistantChat } from '../components/AssistantChat';
 
 interface JobDetails {
     id: number;
@@ -22,6 +23,7 @@ export function JobDetailPage() {
     const [targetLanguage, setTargetLanguage] = useState('Chinese');
     const [isEditingSummary, setIsEditingSummary] = useState(false);
     const [editedSummary, setEditedSummary] = useState('');
+    const [isAssistantOpen, setIsAssistantOpen] = useState(false);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -122,6 +124,12 @@ export function JobDetailPage() {
             <div className="d-flex justify-content-between align-items-center mb-4">
                 <h2>Job Details</h2>
                 <div className="d-flex gap-2">
+                    <button 
+                        className="btn btn-primary"
+                        onClick={() => setIsAssistantOpen(true)}
+                    >
+                        <i className="bi bi-robot me-1"></i> 会议助理
+                    </button>
                     <button className="btn btn-outline-secondary" onClick={() => { 
                         localStorage.removeItem('token'); 
                         window.location.href = '/login'; 
@@ -131,6 +139,19 @@ export function JobDetailPage() {
                     <Link to="/" className="btn btn-secondary">Back to Dashboard</Link>
                 </div>
             </div>
+            {isAssistantOpen && (
+                <AssistantChat 
+                    job={{
+                        id: job.id,
+                        filename: job.filename,
+                        status: job.status,
+                        created_at: job.created_at,
+                        summary: job.summary,
+                        transcript: job.transcript,
+                    }}
+                    onClose={() => setIsAssistantOpen(false)}
+                />
+            )}
             <div className="card">
                 <div className="card-header"><h5>{job.filename}</h5></div>
                 <div className="card-body">
