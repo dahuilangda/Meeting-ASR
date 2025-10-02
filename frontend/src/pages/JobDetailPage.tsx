@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { MarkdownViewer } from '../components/MarkdownViewer';
+import MarkdownEditor from '@uiw/react-markdown-editor';
 
 interface JobDetails {
     id: number;
@@ -19,6 +20,8 @@ export function JobDetailPage() {
     const [job, setJob] = useState<JobDetails | null>(null);
     const [error, setError] = useState('');
     const [targetLanguage, setTargetLanguage] = useState('Chinese');
+    const [isEditingSummary, setIsEditingSummary] = useState(false);
+    const [editedSummary, setEditedSummary] = useState('');
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -54,8 +57,19 @@ export function JobDetailPage() {
         setActiveTab('summary'); // Switch to summary tab immediately
         setIsSummarizing(true);
         try {
-            const response = await apiClient.post(`/jobs/${jobId}/summarize`);
-            setJob(response.data as JobDetails); // Update job with summary
+            const response = await apiClient.post(`/jobs/${jobId}/summarize`, {
+                target_language: targetLanguage
+            }, {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            const jobData = response.data as JobDetails;
+            setJob(jobData); // Update job with summary
+            // Also update the edited summary state
+            if (jobData.summary) {
+                setEditedSummary(jobData.summary);
+            }
         } catch (err: unknown) {
             console.error("Summarization failed", err);
             let errorMessage = 'Unknown error';
@@ -68,6 +82,33 @@ export function JobDetailPage() {
             alert(`Failed to generate summary: ${errorMessage}`);
         } finally {
             setIsSummarizing(false);
+        }
+    };
+
+    const handleSaveSummary = async () => {
+        if (!jobId || !editedSummary) return;
+
+        try {
+            // Update the job's summary in the backend
+            const response = await apiClient.post(`/jobs/${jobId}/update_summary`, {
+                summary: editedSummary
+            }, {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            setJob(response.data as JobDetails);
+            setIsEditingSummary(false);
+        } catch (err: unknown) {
+            console.error("Failed to save summary", err);
+            let errorMessage = 'Unknown error';
+            if (err instanceof Error) {
+                errorMessage = err.message;
+            } else if (typeof err === 'object' && err !== null && 'response' in err) {
+                const errorWithResponse = err as { response?: { data?: { detail?: string } } };
+                errorMessage = errorWithResponse.response?.data?.detail || 'Unknown error';
+            }
+            alert(`Failed to save summary: ${errorMessage}`);
         }
     };
 
@@ -154,7 +195,7 @@ export function JobDetailPage() {
                                 className="form-select form-select-sm" 
                                 value={targetLanguage} 
                                 onChange={e => setTargetLanguage(e.target.value)}
-                                disabled={isTranslating}
+                                disabled={isTranslating || isSummarizing}
                             >
                                 <option value="Chinese">Chinese</option>
                                 <option value="English">English</option>
@@ -237,10 +278,52 @@ export function JobDetailPage() {
                         </div>
                         
                         <div className={`tab-pane fade ${activeTab === 'summary' ? 'show active' : ''}`}>
-                            <h5 className="card-title">Meeting Summary</h5>
+                            <div className="d-flex justify-content-between align-items-center mb-3">
+                                <h5 className="card-title">Meeting Summary</h5>
+                                {job?.summary && !isEditingSummary && (
+                                    <button 
+                                        className="btn btn-outline-secondary btn-sm"
+                                        onClick={() => {
+                                            setEditedSummary(job.summary || '');
+                                            setIsEditingSummary(true);
+                                        }}
+                                    >
+                                        <i className="bi bi-pencil me-1"></i> Edit Summary
+                                    </button>
+                                )}
+                                {isEditingSummary && (
+                                    <div className="d-flex gap-2">
+                                        <button 
+                                            className="btn btn-success btn-sm"
+                                            onClick={handleSaveSummary}
+                                        >
+                                            <i className="bi bi-save me-1"></i> Save
+                                        </button>
+                                        <button 
+                                            className="btn btn-secondary btn-sm"
+                                            onClick={() => setIsEditingSummary(false)}
+                                        >
+                                            <i className="bi bi-x me-1"></i> Cancel
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                             
                             {job.summary ? (
-                                <MarkdownViewer content={job.summary} />
+                                isEditingSummary ? (
+                                    <div style={{ height: '500px' }}>
+                                        <MarkdownEditor
+                                            value={editedSummary}
+                                            onChange={(value) => setEditedSummary(value)}
+                                            className="w-100"
+                                            style={{ height: '100%' }}
+                                        />
+                                    </div>
+                                ) : (
+                                    <div className="border rounded p-3 bg-light" style={{ minHeight: '300px' }}>
+                                        <MarkdownViewer content={job.summary} />
+                                    </div>
+                                )
                             ) : isSummarizing ? (
                                 <div className="alert alert-info d-flex align-items-center">
                                     <span className="spinner-border spinner-border-sm me-2" role="status"></span>

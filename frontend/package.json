@@ -11,6 +11,7 @@
     "@types/node": "^16.18.126",
     "@types/react": "^19.1.15",
     "@types/react-dom": "^19.1.9",
+    "@uiw/react-markdown-editor": "^6.1.4",
     "axios": "^1.12.2",
     "bootstrap": "^5.3.8",
     "livekit-client": "^2.15.7",

@@ -564,14 +564,20 @@ print(f'DEBUG: OPENAI_BASE_URL={os.getenv("OPENAI_BASE_URL")}')
 print(f'DEBUG: OPENAI_MODEL_NAME={os.getenv("OPENAI_MODEL_NAME")}')
 print(f'DEBUG: OPENAI_API_KEY is set: {bool(os.getenv("OPENAI_API_KEY"))}')
 
+class SummarizeJobRequest(BaseModel):
+    target_language: str = "Chinese"  # Default to Chinese if not specified
+
 class TranslateJobRequest(BaseModel):
     target_language: str
 
 @app.post("/jobs/{job_id}/summarize", response_model=schemas.Job)
-async def summarize_job(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def summarize_job(job_id: int, request: SummarizeJobRequest = None, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
     if not job: raise HTTPException(status_code=404, detail="Job not found")
     if not job.transcript: raise HTTPException(status_code=400, detail="Job has no transcript to summarize.")
+
+    # Use default Chinese if no request or no language specified
+    target_language = request.target_language if request else "Chinese"
 
     try:
         # Initialize OpenAI client with proper error handling similar to optimize_transcript_with_llm
@@ -606,13 +612,27 @@ async def summarize_job(job_id: int, current_user: schemas.User = Depends(get_cu
                 print(f"Error initializing OpenAI client: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
         
+        # Improved prompt for professional meeting summary
+        system_prompt = f"""You are an expert meeting assistant. Please create a professional, structured summary of the following meeting transcript in {target_language}. The summary should:
+
+1. Begin with a brief overview of the meeting (purpose, participants, date)
+2. List key discussion points with context
+3. Clearly identify any decisions made with the responsible parties
+4. Highlight action items with clear owners and deadlines
+5. Note any unresolved issues or topics for follow-up
+6. Maintain accuracy to the original conversation while organizing information logically
+7. Use proper formatting with bullet points, sections, and headers as appropriate
+
+Format the summary professionally and ensure it accurately reflects the content of the original transcript while being concise and easy to follow."""
+
         chat_completion = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are an expert meeting assistant. Please summarize the following meeting transcript, identifying key discussion points, decisions made, and action items. Format it clearly."}, 
-                {"role": "user", "content": job.transcript}
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": f"Meeting Transcript:\n\n{job.transcript}"}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
-            timeout=600  # Increase timeout for longer operations
+            timeout=600,  # Increase timeout for longer operations
+            temperature=0.3  # Lower temperature for more consistent, factual output
         )
         summary = chat_completion.choices[0].message.content
         crud.update_job_summary(db, job_id=job_id, summary=summary)
@@ -750,6 +770,23 @@ async def optimize_job_transcript(job_id: int, current_user: schemas.User = Depe
         return updated_job
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to optimize transcript: {e}")
+
+class UpdateSummaryRequest(BaseModel):
+    summary: str
+
+@app.post("/jobs/{job_id}/update_summary")
+async def update_summary(job_id: int, request: UpdateSummaryRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    try:
+        crud.update_job_summary(db, job_id=job_id, summary=request.summary)
+        # Return the updated job
+        updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+        return updated_job
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update summary: {e}")
 
 @app.post("/jobs/{job_id}/optimize_segment", response_model=dict)
 async def optimize_segment(job_id: int, request: dict, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
