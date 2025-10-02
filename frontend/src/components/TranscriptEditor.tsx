@@ -30,6 +30,14 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingSpeaker && renameInputRef.current) {
+      renameInputRef.current.focus();
+    }
+  }, [editingSpeaker]);
+  
   const saveTranscript = async (updatedSegments: TranscriptSegment[]) => {
     try {
       await apiClient.post(`/jobs/${jobId}/transcript`, {
@@ -41,13 +49,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   };
 
   const handleSpeakerNameChange = (oldName: string, newName: string) => {
-    const updatedSegments = segments.map((segment, index) => {
+    const updatedSegments = segments.map(segment => {
       if (segment.speaker === oldName) {
-        const nextSegment = segments[index + 1];
-        if (nextSegment) {
-          nextSegment.doNotMergeWithPrevious = true;
-        }
-        return { ...segment, speaker: newName, doNotMergeWithPrevious: true };
+        return { ...segment, speaker: newName };
       }
       return segment;
     });
@@ -59,18 +63,13 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const handleSegmentSpeakerChange = (segmentIds: number[], newName: string) => {
     const updatedSegments = segments.map(segment => {
       if (segmentIds.includes(segment.id)) {
-        return { ...segment, speaker: newName, doNotMergeWithPrevious: true };
+        // When changing speaker via dropdown, preserve existing doNotMergeWithPrevious value
+        // to maintain existing groupings, only change the speaker.
+        return { ...segment, speaker: newName };
       }
       return segment;
     });
-
-    // Prevent merging with the next segment
-    const lastSegmentId = segmentIds[segmentIds.length - 1];
-    const lastSegmentIndex = updatedSegments.findIndex(s => s.id === lastSegmentId);
-    if (lastSegmentIndex !== -1 && lastSegmentIndex < updatedSegments.length - 1) {
-      updatedSegments[lastSegmentIndex + 1].doNotMergeWithPrevious = true;
-    }
-
+    
     setSegments(updatedSegments);
     saveTranscript(updatedSegments);
   };
@@ -371,9 +370,121 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     setAudioError("Audio file could not be loaded. Either the file is unavailable or there was a connection issue.");
   };
 
+  const handleOptimizeSegment = async (segmentId: number) => {
+    const segment = segments.find(seg => seg.id === segmentId);
+    if (!segment) return;
+
+    try {
+      // Use the job-specific optimization endpoint, mimicking how the full transcript optimization works
+      // We'll send only this segment as if it were the full transcript for the job
+      const response = await apiClient.post(`/jobs/${jobId}/optimize_segment`, {
+        text: segment.text,
+        speaker: segment.speaker
+      }, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const optimizedText = response.data.optimized_text;
+      
+      // Update the segment with the optimized text
+      const updatedSegments = segments.map(s => 
+        s.id === segmentId 
+          ? { ...s, text: optimizedText } 
+          : s
+      );
+      
+      setSegments(updatedSegments);
+      saveTranscript(updatedSegments);
+    } catch (error) {
+      console.error('Error optimizing segment:', error);
+      // Optionally notify user about the error
+      alert('Failed to optimize segment. Please try again.');
+    }
+  };
+
+  const handleGenerateSummary = async () => {
+    try {
+      await apiClient.post(`/jobs/${jobId}/summarize`);
+      // Refresh the job details to get the summary
+      const response = await apiClient.get(`/jobs/${jobId}`);
+      const jobDetails = response.data;
+      alert('Summary generated successfully!');
+    } catch (error) {
+      console.error('Error generating summary:', error);
+      alert('Failed to generate summary. Please try again.');
+    }
+  };
+
+  const handleTranslate = async () => {
+    try {
+      // For now, we'll just translate to English as an example
+      const response = await apiClient.post(`/jobs/${jobId}/translate`, {
+        target_language: 'English'
+      });
+      // In a real implementation, you might want to display the translation somewhere
+      alert('Translation completed!');
+    } catch (error) {
+      console.error('Error translating:', error);
+      alert('Failed to translate. Please try again.');
+    }
+  };
+
+  const handleOptimizeAll = async () => {
+    try {
+      await apiClient.post(`/jobs/${jobId}/optimize`);
+      // Refresh the job details to get the optimized transcript
+      const response = await apiClient.get(`/jobs/${jobId}`);
+      const jobDetails = response.data;
+      // Update the segments with the optimized transcript
+      if (jobDetails.transcript && jobDetails.timing_info) {
+        try {
+          const timingData = JSON.parse(jobDetails.timing_info);
+          const parsedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
+            id: index,
+            text: item.text,
+            startTime: item.start_time,
+            endTime: item.end_time,
+            speaker: item.speaker
+          }));
+          setSegments(parsedSegments);
+        } catch (error) {
+          console.error("Error parsing timing info:", error);
+          // Fallback to parsing transcript text if timing info is invalid
+          setSegments(parseTranscriptFallback(jobDetails.transcript || ''));
+        }
+      }
+      alert('Transcript optimized successfully!');
+    } catch (error) {
+      console.error('Error optimizing transcript:', error);
+      alert('Failed to optimize transcript. Please try again.');
+    }
+  };
+
   return (
     <div className="transcript-editor" ref={editorRef}>
       <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <div className="d-flex gap-2">
+          <button 
+            className="btn btn-outline-primary btn-sm"
+            onClick={handleGenerateSummary}
+          >
+            <i className="bi bi-journal-text me-1"></i> Generate Summary
+          </button>
+          <button 
+            className="btn btn-outline-info btn-sm"
+            onClick={handleTranslate}
+          >
+            <i className="bi bi-translate me-1"></i> Translate
+          </button>
+          <button 
+            className="btn btn-outline-success btn-sm"
+            onClick={handleOptimizeAll}
+          >
+            <i className="bi bi-magic me-1"></i> Optimize All
+          </button>
+        </div>
         <div className="d-flex align-items-center gap-2 ms-auto">
           {audioUrl && !isAudioLoading ? (
             <>
@@ -474,17 +585,36 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               <div className="segment-header d-flex justify-content-between align-items-center mb-2">
                 <div className="d-flex align-items-center gap-2">
                   {editingSpeaker === group.speaker ? (
-                    <input 
-                      type="text"
-                      defaultValue={group.speaker}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleSpeakerNameChange(group.speaker, (e.target as HTMLInputElement).value);
-                        }
-                      }}
-                      onBlur={() => setEditingSpeaker(null)}
-                      autoFocus
-                    />
+                    <div className="d-flex align-items-center">
+                      <input 
+                        ref={renameInputRef}
+                        type="text"
+                        defaultValue={group.speaker}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleSpeakerNameChange(group.speaker, (e.target as HTMLInputElement).value);
+                          } else if (e.key === 'Escape') {
+                            setEditingSpeaker(null);
+                          }
+                        }}
+                        onBlur={(e) => {
+                          // Only change if the value is different
+                          if (e.target.value !== group.speaker) {
+                            handleSpeakerNameChange(group.speaker, e.target.value);
+                          } else {
+                            setEditingSpeaker(null);
+                          }
+                        }}
+                        className="form-control form-control-sm me-2"
+                        autoFocus
+                      />
+                      <button 
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={() => setEditingSpeaker(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   ) : (
                     <div className="dropdown">
                       <button 
@@ -505,7 +635,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           <li key={speaker}>
                             <button 
                               className="dropdown-item"
-                              onClick={() => handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker)}
+                              onClick={() => {
+                                handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker);
+                              }}
                             >
                               {speaker}
                             </button>
@@ -515,7 +647,11 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                         <li>
                           <button 
                             className="dropdown-item"
-                            onClick={() => setEditingSpeaker(group.speaker)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setEditingSpeaker(group.speaker);
+                            }}
                           >
                             Rename
                           </button>
@@ -548,6 +684,14 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                   >
                     <i className="bi bi-union me-1"></i>
                     Merge with next
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline-success"
+                    onClick={() => handleOptimizeSegment(group.id)}
+                    title="Optimize this segment with AI"
+                  >
+                    <i className="bi bi-magic me-1"></i>
+                    AI Optimize
                   </button>
                   <button 
                     className={`btn btn-sm ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}

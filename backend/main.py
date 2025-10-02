@@ -618,3 +618,83 @@ async def optimize_job_transcript(job_id: int, current_user: schemas.User = Depe
         return updated_job
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to optimize transcript: {e}")
+
+@app.post("/jobs/{job_id}/optimize_segment", response_model=dict)
+async def optimize_segment(job_id: int, request: dict, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Verify that the job belongs to the current user
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    try:
+        # Extract text and speaker from the request
+        text = request.get("text", "")
+        speaker = request.get("speaker", "")
+        
+        # Create a prompt that includes the speaker context to maintain proper speaker labels
+        import os
+        from openai import OpenAI
+        import httpx
+        
+        # Initialize OpenAI client
+        try:
+            # First, try with default settings
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+        except Exception as init_error:
+            print(f"Initial OpenAI client setup failed: {init_error}")
+            # Handle SSL certificate issues for custom endpoints
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
+                # Create httpx client with SSL verification disabled for custom endpoints
+                http_client = httpx.Client(
+                    verify=False,  # Disable SSL verification for self-signed certificates
+                    timeout=60.0   # Increase timeout
+                )
+                
+                client = OpenAI(
+                    api_key=os.getenv("OPENAI_API_KEY"), 
+                    base_url=os.getenv("OPENAI_BASE_URL"),
+                    http_client=http_client
+                )
+            except Exception as e:
+                print(f"Error initializing OpenAI client: {e}")
+                # If client initialization fails completely, return original text
+                return {"optimized_text": text}
+        
+        # Create prompt with context about maintaining speaker labels
+        prompt = f"""
+        请优化以下会议转录段落。这是{speaker}的发言，是一段语音转文字的结果，可能存在一些错误和不连贯的地方。
+        请进行以下处理：
+        1. 修正明显的错别字和语法错误
+        2. 让表达更连贯和易读
+        3. 保持说话人标识不变（例如[{speaker}]）
+        4. 保持原文的核心意思不变
+        5. 如果有不完整的句子，根据上下文补全或合理组织
+        6. 确保优化后的内容适合会议记录的形式
+        7. 保持句子的完整性，不要截断
+
+        以下是需要优化的转录段落：
+        {text}
+
+        请输出优化后的转录段落：
+        """
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You are an expert at improving speech-to-text transcriptions. You maintain speaker context while improving readability, fixing obvious errors, and making the conversation more coherent."},
+                {"role": "user", "content": prompt}
+            ],
+            model=os.getenv("OPENAI_MODEL_NAME") or "gpt-3.5-turbo",  # Fallback to gpt-3.5-turbo if not specified
+            temperature=0.3,  # Lower temperature for more consistent output
+            timeout=60  # Increase timeout for longer operations
+        )
+        
+        optimized_text = chat_completion.choices[0].message.content
+        return {"optimized_text": optimized_text}
+        
+    except Exception as e:
+        print(f"Error optimizing segment: {e}")
+        # If LLM optimization fails, return the original text
+        return {"optimized_text": text}
