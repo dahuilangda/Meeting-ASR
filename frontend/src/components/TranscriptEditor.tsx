@@ -75,8 +75,19 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     saveTranscript(updatedSegments);
   };
 
-  const handleDeleteSegment = (segmentId: number) => {
-    const updatedSegments = segments.filter(segment => segment.id !== segmentId);
+  const handleDeleteSegment = (segmentIds: number[]) => {
+    const lastSegmentId = segmentIds[segmentIds.length - 1];
+    const lastSegmentIndex = segments.findIndex(s => s.id === lastSegmentId);
+
+    const updatedSegments = segments.filter(segment => !segmentIds.includes(segment.id));
+
+    if (lastSegmentIndex !== -1 && lastSegmentIndex < segments.length - 1) {
+      const nextSegmentIndex = updatedSegments.findIndex(s => s.startTime >= segments[lastSegmentIndex].endTime);
+      if (nextSegmentIndex !== -1) {
+        updatedSegments[nextSegmentIndex].doNotMergeWithPrevious = true;
+      }
+    }
+
     setSegments(updatedSegments);
     saveTranscript(updatedSegments);
   };
@@ -526,7 +537,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                   </button>
                   <button
                     className="btn btn-sm btn-outline-danger"
-                    onClick={() => handleDeleteSegment(group.id)}
+                    onClick={() => handleDeleteSegment(group.originalSegments.map(s => s.id))}
                   >
                     <i className="bi bi-trash-fill me-1"></i>
                     Delete
