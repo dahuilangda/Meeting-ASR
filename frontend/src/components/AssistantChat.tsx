@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ChatMessagePayload, ChatResponse, sendAssistantChat } from '../api';
 
 export interface AssistantChatJobContext {
@@ -39,6 +41,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [showQuickPrompts, setShowQuickPrompts] = useState(true);
 
   const systemPrompt = useMemo(() => {
     const meetingDate = new Date(job.created_at).toLocaleString();
@@ -160,27 +163,48 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         </div>
       </div>
 
-      <div className="px-3 py-2 border-bottom" style={{ backgroundColor: '#f8f9fa' }}>
-        <div className="d-flex gap-2 flex-wrap">
-          {QUICK_PROMPTS.map(prompt => (
+      {showQuickPrompts && (
+        <div className="px-3 py-2 border-bottom" style={{ backgroundColor: '#f8f9fa' }}>
+          <div className="d-flex justify-content-between align-items-center mb-2">
+            <small className="text-muted">快捷提问</small>
             <button
-              key={prompt}
               type="button"
-              className="btn btn-sm btn-outline-primary"
-              onClick={() => handleQuickPrompt(prompt)}
-              disabled={isSending}
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => setShowQuickPrompts(false)}
             >
-              {prompt}
+              隐藏
             </button>
-          ))}
+          </div>
+          <div className="d-flex gap-2 flex-wrap">
+            {QUICK_PROMPTS.map(prompt => (
+              <button
+                key={prompt}
+                type="button"
+                className="btn btn-sm btn-outline-primary"
+                onClick={() => handleQuickPrompt(prompt)}
+                disabled={isSending}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div ref={scrollRef} className="flex-grow-1 px-3 py-3" style={{ overflowY: 'auto', fontSize: '0.9rem', backgroundColor: '#fff' }}>
         {messages.map(message => (
           <div key={message.id} className={`d-flex mb-3 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
             <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'}`} style={{ maxWidth: '85%' }}>
-              {message.content}
+              {message.role === 'assistant' ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              ) : (
+                message.content.split('\n').map((line, idx) => (
+                  <span key={idx}>
+                    {line}
+                    {idx !== message.content.split('\n').length - 1 && <br />}
+                  </span>
+                ))
+              )}
             </div>
           </div>
         ))}
@@ -216,6 +240,15 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         </div>
         <div className="d-flex justify-content-between align-items-center mt-2">
           <small className="text-muted">按 Enter 发送，Shift+Enter 换行</small>
+          {!showQuickPrompts && (
+            <button
+              type="button"
+              className="btn btn-sm btn-outline-secondary me-auto"
+              onClick={() => setShowQuickPrompts(true)}
+            >
+              显示快捷提问
+            </button>
+          )}
           <button type="submit" className="btn btn-primary" disabled={isSending || !userInput.trim()}>
             {isSending ? (
               <>

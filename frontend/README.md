@@ -37,6 +37,8 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
 - Floating "会议助理" button opens a Copilot-style conversation window
 - Ask follow-up questions about the transcript or summary using the existing LLM backend
 - Quick prompt chips for action items, risks, and decision summaries
+- Assistant replies render Markdown (lists, tables, emphasis) for better readability
+- Quick prompts can be hidden when you need more space in the chat window
 
 ## Prerequisites
 

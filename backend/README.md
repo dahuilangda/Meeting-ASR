@@ -22,6 +22,7 @@ The backend provides:
 - **Post-Processing**: Meeting summarization capabilities
 - **Copilot Assistant**: Conversational endpoint to answer questions about transcripts and summaries
 - **Job Management**: Track processing status and results
+- **Transcript Persistence**: Edited transcripts are mirrored to structured JSON/text files for rapid reloads
 
 ## Tech Stack
 

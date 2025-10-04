@@ -701,12 +701,29 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                 }}
                 onBlur={(e) => {
                   if (!e.relatedTarget || !editorRef.current?.contains(e.relatedTarget as Node)) {
-                    const updatedSegments = segments.map(segment => {
-                      if (segment.id === group.id) {
-                        return { ...segment, text: e.target.innerText };
+                    const editedText = e.currentTarget.innerText;
+                    const originalIds = new Set(group.originalSegments.map(s => s.id));
+                    let replacementInserted = false;
+
+                    const updatedSegments = segments.reduce<TranscriptSegment[]>((acc, segment) => {
+                      if (originalIds.has(segment.id)) {
+                        if (!replacementInserted) {
+                          const firstOriginal = group.originalSegments[0];
+                          acc.push({
+                            ...segment,
+                            text: editedText,
+                            startTime: group.startTime,
+                            endTime: group.endTime,
+                            doNotMergeWithPrevious: Boolean(firstOriginal?.doNotMergeWithPrevious),
+                          });
+                          replacementInserted = true;
+                        }
+                        return acc;
                       }
-                      return segment;
-                    });
+                      acc.push(segment);
+                      return acc;
+                    }, []);
+
                     setSegments(updatedSegments);
                     saveTranscript(updatedSegments);
                     setEditingSegmentId(null);

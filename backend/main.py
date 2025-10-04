@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List
 import shutil
 import os
+import json
+from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +33,25 @@ app.add_middleware(
 
 # Mount the uploads directory to serve audio files
 app.mount("/uploads", StaticFiles(directory="backend/uploads"), name="uploads")
+
+TRANSCRIPT_STORAGE_DIR = Path("backend/uploads/transcripts")
+
+def persist_transcript_to_disk(job_id: int, transcript_text: str, segments: List[dict]) -> None:
+    """Persist transcript text and structured segments to disk for realtime access."""
+    TRANSCRIPT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    text_path = TRANSCRIPT_STORAGE_DIR / f"job_{job_id}.txt"
+    segments_path = TRANSCRIPT_STORAGE_DIR / f"job_{job_id}.json"
+    text_path.write_text(transcript_text, encoding="utf-8")
+    segments_path.write_text(json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def hydrate_job_transcript_from_disk(job: models.Job) -> None:
+    """If transcript artifacts exist on disk, hydrate the job instance before returning."""
+    text_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
+    segments_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.json"
+    if text_path.exists():
+        job.transcript = text_path.read_text(encoding="utf-8")
+    if segments_path.exists():
+        job.timing_info = segments_path.read_text(encoding="utf-8")
 
 def get_db():
     db = SessionLocal()
@@ -468,18 +489,22 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         # Prepare timing information as JSON
         import json
         sentences_with_timing = []
-        for seg in result_segments:
+        for idx, seg in enumerate(result_segments):
             sentences_with_timing.append({
                 'speaker': seg['speaker'],
                 'text': seg['text'],
-                'start_time': seg['start_time'],
-                'end_time': seg['end_time']
+                'start_time': float(seg.get('start_time', 0) or 0),
+                'end_time': float(seg.get('end_time', 0) or 0),
+                'do_not_merge_with_previous': bool(seg.get('do_not_merge_with_previous', False)),
+                'line_number': idx,
+                'segment_id': seg.get('id'),
             })
         
         timing_info_json = json.dumps(sentences_with_timing)
 
         # Store the transcript with native punctuation
         crud.update_job_transcript(db, job_id=job_id, transcript=formatted_transcript, timing_info=timing_info_json)
+        persist_transcript_to_disk(job_id, formatted_transcript, sentences_with_timing)
         print(f"[Job {job_id}] Processing completed with speakers: {set([seg['speaker'] for seg in result_segments])}")
         print(f"[Job {job_id}] Result segments: {len(result_segments)}")
 
@@ -525,6 +550,7 @@ def get_user_jobs(current_user: schemas.User = Depends(get_current_user), db: Se
 def get_job_details(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
     if not job: raise HTTPException(status_code=404, detail="Job not found")
+    hydrate_job_transcript_from_disk(job)
     return job
 
 @app.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -732,23 +758,26 @@ async def update_job_transcript_endpoint(job_id: int, request: TranscriptUpdateR
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    import json
-
     transcript_lines: List[str] = []
     timing_entries: List[dict] = []
 
-    for segment in request.transcript:
+    for index, segment in enumerate(request.transcript):
         text = (segment.text or "").strip()
         if not text:
             continue
 
         speaker = (segment.speaker or "Unknown").strip() or "Unknown"
         transcript_lines.append(f"[{speaker}] {text}")
+        start_time = segment.start_time if segment.start_time is not None else 0
+        end_time = segment.end_time if segment.end_time is not None else start_time
         timing_entries.append({
             "speaker": speaker,
             "text": text,
-            "start_time": segment.start_time if segment.start_time is not None else 0,
-            "end_time": segment.end_time if segment.end_time is not None else (segment.start_time if segment.start_time is not None else 0),
+            "start_time": float(start_time),
+            "end_time": float(end_time),
+            "do_not_merge_with_previous": bool(segment.do_not_merge_with_previous),
+            "line_number": index,
+            "segment_id": segment.id,
         })
 
     transcript_text = "\n".join(transcript_lines)
@@ -758,9 +787,12 @@ async def update_job_transcript_endpoint(job_id: int, request: TranscriptUpdateR
     if not updated_job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    persist_transcript_to_disk(job_id, transcript_text, timing_entries)
+
     refreshed_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
     if not refreshed_job:
         raise HTTPException(status_code=404, detail="Job not found")
+    hydrate_job_transcript_from_disk(refreshed_job)
     return refreshed_job
 
 @app.post("/assistant/chat", response_model=ChatResponse)
