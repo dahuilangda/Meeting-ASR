@@ -254,11 +254,14 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     saveTranscript(updatedSegments);
   };
 
-  const handleEditClick = (segment: TranscriptSegment) => {
-    setEditingSegmentId(segment.id);
+  const handleEditClick = (group: TranscriptSegment & { originalSegments: TranscriptSegment[] }) => {
+    setEditingSegmentId(group.id);
   };
 
   const uniqueSpeakers = [...new Set(segments.map(segment => segment.speaker))];
+
+  // Debug: log segments and highlights
+  console.log('TranscriptEditor render - segments:', segments.length, 'highlightedSegments:', highlightedSegments);
 
   // Group consecutive segments by the same speaker for better presentation
   const groupedSegments = segments.reduce((acc, current) => {
@@ -461,6 +464,32 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   
   return (
     <div className="transcript-editor" ref={editorRef}>
+      <style>
+        {`
+          @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+          }
+          .highlighted-segment {
+            animation: highlightFade 5s ease-out;
+          }
+          @keyframes highlightFade {
+            0% {
+              background-color: #ffc107 !important;
+              transform: translateX(4px) scale(1.02);
+            }
+            20% {
+              background-color: #fff3cd !important;
+              transform: translateX(2px) scale(1.01);
+            }
+            100% {
+              background-color: #fff3cd;
+              transform: translateX(0) scale(1);
+            }
+          }
+        `}
+      </style>
       <div className="d-flex align-items-center justify-content-between mb-2">
         <div className="d-flex align-items-center gap-2">
           {audioUrl && !isAudioLoading ? (
@@ -531,7 +560,13 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       )}
 
       <div className="transcript-container" style={{ height: 'calc(75vh - 80px)', overflowY: 'auto', padding: '1rem' }}>
-        {groupedSegments.map((group, index) => {
+        {segments.length === 0 ? (
+          <div className="text-center text-muted p-4">
+            <div className="spinner-border spinner-border-sm me-2"></div>
+            Loading transcript data...
+          </div>
+        ) : (
+          groupedSegments.map((group, index) => {
           const getSpeakerColor = (speaker: string) => {
             const colors = [
               '#e3f2fd', '#f3e5f5', '#e8f5e8', '#fff3e0', '#fce4ec',
@@ -566,9 +601,14 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           const isEditing = editingSegmentId === group.id;
 
           // Check if this segment should be highlighted based on references
+          // highlightedSegments are 1-based indices (from transcript segments)
+          // group.index + 1 should match the refIndex since groups are rendered in order
           const isHighlighted = highlightedSegments.some(refIndex => {
-            const segmentIds = group.originalSegments.map(s => s.id);
-            return segmentIds.includes(refIndex - 1); // Convert 1-based index to 0-based
+            const match = (index + 1) === refIndex;
+            if (match) {
+              console.log(`Highlight match: refIndex=${refIndex}, group.index=${index}, group.id=${group.id}`);
+            }
+            return match;
           });
 
           return (
@@ -577,21 +617,25 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               className={`transcript-segment p-2 mb-2 rounded border ${isEditing ? 'border-primary' : ''} ${isHighlighted ? 'highlighted-segment' : ''}`}
               style={{
                 fontSize: '0.9rem',
-                backgroundColor: isHighlighted ? '#e8f5e8' : bgColor,
-                borderColor: isHighlighted ? '#28a745' : (isEditing ? '#007bff' : borderColor),
-                borderLeftWidth: isHighlighted ? '4px' : '3px',
-                borderLeftColor: isHighlighted ? '#28a745' : borderColor,
-                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : (isHighlighted ? '0 2px 8px rgba(40,167,69,0.2)' : 'none'),
-                transform: isHighlighted ? 'translateX(2px)' : 'translateX(0)',
-                transition: 'all 0.2s ease'
+                backgroundColor: isHighlighted ? '#fff3cd' : bgColor,
+                borderColor: isHighlighted ? '#ffc107' : (isEditing ? '#007bff' : borderColor),
+                borderLeftWidth: isHighlighted ? '6px' : '3px',
+                borderLeftColor: isHighlighted ? '#ffc107' : borderColor,
+                borderWidth: isHighlighted ? '2px' : '1px',
+                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : (isHighlighted ? '0 4px 12px rgba(255,193,7,0.4)' : 'none'),
+                transform: isHighlighted ? 'translateX(4px) scale(1.02)' : 'translateX(0)',
+                transition: 'all 0.3s ease',
+                position: 'relative',
+                zIndex: isHighlighted ? 10 : 1
               }}
             >
               <div className="segment-header d-flex justify-content-between align-items-center mb-2">
                 <div className="d-flex align-items-center gap-2 flex-grow-1">
-                  <span className="badge bg-primary me-2" style={{
+                  <span className={`badge ${isHighlighted ? 'bg-warning' : 'bg-primary'} me-2`} style={{
                     fontSize: '0.75rem',
                     minWidth: '30px',
-                    textAlign: 'center'
+                    textAlign: 'center',
+                    animation: isHighlighted ? 'pulse 1.5s infinite' : 'none'
                   }}>
                     {index + 1}
                   </span>
@@ -769,7 +813,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               </div>
             </div>
           );
-        })}
+        })
+        )}
       </div>
     </div>
   );

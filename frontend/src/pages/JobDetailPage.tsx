@@ -45,21 +45,42 @@ export function JobDetailPage() {
 
     const handleSegmentReference = (segmentIndices: number | number[]) => {
         const indices = Array.isArray(segmentIndices) ? segmentIndices : [segmentIndices];
+        console.log('handleSegmentReference called with:', indices); // Debug log
 
-        // Set highlighted segments
+        // Set highlighted segments - these are 1-based indices from transcript
         setHighlightedSegments(indices);
 
         // Scroll to the first referenced segment after a short delay
         setTimeout(() => {
             const segmentElements = document.querySelectorAll('.transcript-segment');
-            const firstIndex = Math.min(...indices) - 1; // -1 because segments are 1-indexed
-            const targetElement = segmentElements[firstIndex] as HTMLElement;
+            // Find the segment that contains the referenced transcript segment
+            let targetElement: Element | null = null;
+
+            // Look for each highlighted index to find the corresponding segment element
+            for (const refIndex of indices) {
+                // Check each segment element to see if it contains the referenced transcript segment
+                for (let i = 0; i < segmentElements.length; i++) {
+                    const segmentDiv = segmentElements[i] as HTMLElement;
+                    // Look for segment number in the badge - the index should be 1-based
+                    const badge = segmentDiv.querySelector('.badge');
+                    if (badge && badge.textContent === refIndex.toString()) {
+                        targetElement = segmentDiv;
+                        console.log(`Found target: refIndex=${refIndex}, badge.textContent=${badge.textContent}`);
+                        break;
+                    }
+                }
+
+                if (targetElement) break; // Found the first matching segment
+            }
 
             if (targetElement) {
-                targetElement.scrollIntoView({
+                console.log('Scrolling to segment:', targetElement); // Debug log
+                (targetElement as HTMLElement).scrollIntoView({
                     behavior: 'smooth',
                     block: 'center'
                 });
+            } else {
+                console.log('Target element not found for indices:', indices); // Debug log
             }
         }, 100);
 
