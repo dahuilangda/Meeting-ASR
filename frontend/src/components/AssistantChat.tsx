@@ -223,18 +223,17 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           }
           .assistant-chat.dragging {
-            opacity: 0.9;
-            transform: scale(1.02);
+            opacity: 1;
           }
           .assistant-chat.resizing {
-            opacity: 0.95;
+            opacity: 1;
           }
           .drag-handle {
             user-select: none;
           }
           .resize-handle:hover {
             opacity: 1 !important;
-            background: linear-gradient(135deg, transparent 40%, #6c757d 40%) !important;
+            background: linear-gradient(135deg, transparent 40%, #adb5bd 40%) !important;
           }
           .assistant-chat .btn-sm {
             font-weight: 400;
@@ -246,15 +245,15 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
             width: 6px;
           }
           .assistant-chat::-webkit-scrollbar-track {
-            background: #f1f1f1;
+            background: #f8f9fa;
             border-radius: 3px;
           }
           .assistant-chat::-webkit-scrollbar-thumb {
-            background: #c1c1c1;
+            background: #dee2e6;
             border-radius: 3px;
           }
           .assistant-chat::-webkit-scrollbar-thumb:hover {
-            background: #a8a8a8;
+            background: #ced4da;
           }
         `}
       </style>
@@ -270,26 +269,36 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
           display: 'flex',
           flexDirection: 'column',
           zIndex: 1050,
-          transition: isDragging || isResizing ? 'none' : 'all 0.2s ease',
+          transition: isDragging || isResizing ? 'none' : 'none',
           resize: 'none',
-          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.3)',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
           border: '1px solid rgba(0, 0, 0, 0.1)'
         }}
         onMouseDown={handleMouseDown}
       >
       {/* Header */}
-      <div className="drag-handle d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-primary text-white"
-           style={{ borderTopLeftRadius: '1rem', borderTopRightRadius: '1rem', cursor: 'move' }}>
+      <div className="drag-handle d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light"
+           style={{ borderTopLeftRadius: '1rem', borderTopRightRadius: '1rem', cursor: 'move', color: '#495057' }}>
         <div className="d-flex align-items-center gap-2">
           <i className="bi bi-robot"></i>
           <div>
             <strong style={{ fontSize: '0.9rem' }}>AI Assistant</strong>
-            <div className="text-white-50" style={{ fontSize: '0.75rem' }}>{job.filename}</div>
+            <div className="text-muted" style={{ fontSize: '0.75rem' }}>{job.filename}</div>
           </div>
         </div>
         <div className="d-flex gap-1">
+          {!isMinimized && (
+            <button
+              className="btn btn-sm btn-outline-secondary border-0 p-1"
+              onClick={() => setShowQuickPrompts(!showQuickPrompts)}
+              style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
+              title={showQuickPrompts ? "Hide Quick Questions" : "Show Quick Questions"}
+            >
+              <i className="bi bi-lightning"></i>
+            </button>
+          )}
           <button
-            className="btn btn-sm btn-outline-light border-0 p-1"
+            className="btn btn-sm btn-outline-secondary border-0 p-1"
             onClick={() => setIsMinimized(!isMinimized)}
             style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
             title={isMinimized ? "Expand" : "Minimize"}
@@ -297,7 +306,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
             <i className={`bi bi-${isMinimized ? 'caret-down-fill' : 'caret-up-fill'}`}></i>
           </button>
           <button
-            className="btn btn-sm btn-outline-light border-0 p-1"
+            className="btn btn-sm btn-outline-secondary border-0 p-1"
             onClick={handleReset}
             disabled={isSending}
             style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
@@ -306,7 +315,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
             <i className="bi bi-arrow-clockwise"></i>
           </button>
           <button
-            className="btn btn-sm btn-outline-light border-0 p-1"
+            className="btn btn-sm btn-outline-secondary border-0 p-1"
             onClick={onClose}
             style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
             title="Close"
@@ -318,16 +327,8 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
 
       {!isMinimized && showQuickPrompts && (
         <div className="px-3 py-2 border-bottom" style={{ backgroundColor: '#f8f9fa' }}>
-          <div className="d-flex justify-content-between align-items-center mb-2">
+          <div className="d-flex align-items-center mb-2">
             <small className="text-muted">Quick Questions</small>
-            <button
-              type="button"
-              className="btn btn-sm btn-outline-secondary"
-              onClick={() => setShowQuickPrompts(false)}
-              style={{ fontSize: '0.75rem', padding: '2px 6px' }}
-            >
-              Hide
-            </button>
           </div>
           <div className="d-flex gap-1 flex-wrap">
             {QUICK_PROMPTS.map(prompt => (
@@ -397,17 +398,6 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
               />
             </div>
             <div className="d-flex gap-1">
-              {!showQuickPrompts && (
-                <button
-                  type="button"
-                  className="btn btn-outline-secondary btn-sm"
-                  onClick={() => setShowQuickPrompts(true)}
-                  style={{ fontSize: '0.8rem', padding: '6px 8px' }}
-                  title="Show Quick Questions"
-                >
-                  <i className="bi bi-lightning"></i>
-                </button>
-              )}
               <button type="submit" className="btn btn-primary btn-sm" disabled={isSending || !userInput.trim()} style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
                 {isSending ? (
                   <span className="spinner-border spinner-border-sm" role="status"></span>
@@ -432,9 +422,9 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
             height: '16px',
             cursor: 'nwse-resize',
             borderBottomRightRadius: '1rem',
-            background: 'linear-gradient(135deg, transparent 50%, #adb5bd 50%)',
+            background: 'linear-gradient(135deg, transparent 50%, #dee2e6 50%)',
             opacity: 0.6,
-            transition: 'opacity 0.2s'
+            transition: 'none'
           }}
           onMouseDown={(e) => {
             e.preventDefault();
