@@ -490,7 +490,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           }
         `}
       </style>
-      <div className="d-flex align-items-center justify-content-between mb-2">
+      <div className="d-flex align-items-center justify-content-between mb-2 px-3" style={{minHeight: '32px'}}>
         <div className="d-flex align-items-center gap-2">
           {audioUrl && !isAudioLoading ? (
             <>
@@ -506,6 +506,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                 className="btn btn-sm btn-outline-secondary"
                 onClick={handlePlayPause}
                 disabled={!!audioError}
+                title={isPlaying ? "Pause" : "Play"}
               >
                 {isPlaying ? (
                   <i className="bi bi-pause-fill"></i>
@@ -515,9 +516,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               </button>
             </>
           ) : isAudioLoading ? (
-            <span className="text-muted"><span className="spinner-border spinner-border-sm me-1"></span>Loading...</span>
+            <span className="text-muted small"><span className="spinner-border spinner-border-sm me-1"></span>Loading audio...</span>
           ) : (
-            <span className="text-muted">Audio unavailable</span>
+            <span className="text-muted small">Audio unavailable</span>
           )}
         </div>
 
@@ -534,7 +535,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             disabled={!hasChanges}
             title="Save current changes"
           >
-            <i className="bi bi-save"></i> Save
+            <i className="bi bi-save me-1"></i> Save
           </button>
           <button
             className="btn btn-sm btn-outline-warning"
@@ -548,7 +549,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             disabled={!hasChanges || !originalTranscript}
             title="Reset to original"
           >
-            <i className="bi bi-arrow-clockwise"></i> Reset
+            <i className="bi bi-arrow-clockwise me-1"></i> Reset
           </button>
         </div>
       </div>

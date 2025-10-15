@@ -248,22 +248,6 @@ export function JobDetailPage() {
                 {/* Left Panel - Transcript */}
                 <div className="col-lg-7 mb-4">
                     <div className="card h-100">
-                        <div className="card-header d-flex justify-content-between align-items-center">
-                            <h5 className="mb-0">
-                                Transcript
-                                {highlightedSegments.length > 0 && (
-                                    <span className="badge bg-warning text-dark ms-2">
-                                        {highlightedSegments.length} segment{highlightedSegments.length > 1 ? 's' : ''} referenced
-                                    </span>
-                                )}
-                            </h5>
-                            {isSummarizing && (
-                                <small className="text-muted">
-                                    <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                                    Generating summary...
-                                </small>
-                            )}
-                        </div>
                         <div className="card-body" style={{ height: '75vh', padding: '0' }}>
                             {job.transcript ? (
                                 <TranscriptEditor
@@ -285,10 +269,7 @@ export function JobDetailPage() {
                 {/* Right Panel - Meeting Summary */}
                 <div className="col-lg-5 mb-4">
                     <div className="card h-100">
-                        <div className="card-header">
-                            <h5 className="mb-0">Meeting Summary</h5>
-                        </div>
-                        <div className="card-body" style={{ maxHeight: '75vh', overflowY: 'auto' }}>
+                        <div className="card-body p-0" style={{ maxHeight: '75vh', overflowY: 'auto' }}>
                             <SummaryWithReferences
                                 summary={job?.summary}
                                 transcriptSegments={transcriptSegments}
