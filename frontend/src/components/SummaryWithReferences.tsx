@@ -57,6 +57,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [originalContent, setOriginalContent] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,18 +119,6 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
   }, [summary]);
 
-  // Initialize editor content when summary changes or when editor is ready
-  useEffect(() => {
-    if (editorRef.current && editedContent && !isInitialized) {
-      editorRef.current.innerHTML = getHtmlContent();
-      setIsInitialized(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editedContent, isInitialized]);
-
-  
-  
-  
   // Handle reference click
   const handleReferenceClick = (refAttr: string) => {
     console.log('Transcript reference clicked:', { refAttr }); // Debug log
@@ -190,16 +179,23 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   // Handle WYSIWYG input with auto-save
   const handleWysiwygInput = (e: React.FormEvent<HTMLDivElement>) => {
+    setIsEditing(true);
     // Don't update state during input to avoid cursor jumping
     // The content will be synced when the user leaves the editor
     e.persist();
   };
 
+  // Handle focus to track editing state
+  const handleEditorFocus = () => {
+    setIsEditing(true);
+  };
+
   // Handle blur to save content
   const handleEditorBlur = (e: React.FocusEvent<HTMLDivElement>) => {
-    const content = e.currentTarget.innerText || '';
-    setEditedContent(content);
-    setHasChanges(content !== originalContent);
+    setIsEditing(false);
+    const textContent = e.currentTarget.innerText || '';
+    setEditedContent(textContent);
+    setHasChanges(textContent !== originalContent);
     // Don't re-render the editor content on blur to preserve user edits
   };
 
@@ -232,7 +228,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   };
 
   // Save summary function
-  const saveSummary = async () => {
+  const saveSummary = useCallback(async () => {
     try {
       // Convert markdown content back to the original format expected by the backend
       const updatedSummaryData = {
@@ -260,10 +256,41 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       console.error('Error saving summary:', error);
       return false;
     }
-  };
+  }, [jobId, summary, editedContent, onSummaryUpdate]);
+
+  // Initialize editor content when summary changes or when editor is ready
+  useEffect(() => {
+    if (editorRef.current && editedContent && !isInitialized && !isEditing) {
+      editorRef.current.innerHTML = getHtmlContent();
+      setIsInitialized(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editedContent, isInitialized, isEditing]);
+
+  // Add keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Ctrl+S or Cmd+S to save
+      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+        event.preventDefault();
+        if (hasChanges) {
+          saveSummary().then((success) => {
+            if (success) {
+              console.log('Summary saved successfully');
+            }
+          });
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [hasChanges, editedContent, originalContent, saveSummary]);
 
 
-  
   if (!summary) {
     return (
       <div className="alert alert-info">
@@ -275,13 +302,66 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   return (
     <div className="summary-with-references" style={{height: '100%', display: 'flex', flexDirection: 'column', padding: '0'}}>
 
-      
+      {/* Editor Header with Save Button */}
+      <div className="d-flex justify-content-between align-items-center p-3 border-bottom bg-light" style={{ minHeight: '48px' }}>
+        <h6 className="mb-0 text-muted d-flex align-items-center" style={{ fontSize: '0.9rem', fontWeight: '500', margin: 0, lineHeight: '1.2' }}>
+          <i className="bi bi-journal-text me-2" style={{ fontSize: '0.8rem' }}></i>Meeting Summary
+        </h6>
+        <div className="d-flex align-items-center gap-2" style={{ minHeight: '32px' }}>
+          {hasChanges && (
+            <small className="text-warning me-2">
+              <i className="bi bi-exclamation-circle me-1"></i>Unsaved changes
+            </small>
+          )}
+          <button
+            className={`btn btn-sm ${hasChanges ? 'btn-outline-success' : 'btn-outline-secondary'}`}
+            onClick={async (event) => {
+              if (!hasChanges) return;
+
+              const button = event.currentTarget as HTMLButtonElement;
+              const originalText = button.innerHTML;
+              button.innerHTML = '<span className="spinner-border spinner-border-sm me-1"></span>Saving...';
+              button.disabled = true;
+
+              const success = await saveSummary();
+
+              if (success) {
+                button.innerHTML = '<i className="bi bi-check-circle me-1"></i> Saved!';
+                button.classList.remove('btn-outline-success');
+                button.classList.add('btn-success');
+                setTimeout(() => {
+                  button.innerHTML = originalText;
+                  button.classList.remove('btn-success');
+                  button.classList.add('btn-outline-success');
+                  button.disabled = false;
+                }, 2000);
+              } else {
+                button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
+                button.classList.remove('btn-outline-success');
+                button.classList.add('btn-danger');
+                setTimeout(() => {
+                  button.innerHTML = originalText;
+                  button.classList.remove('btn-danger');
+                  button.classList.add('btn-outline-success');
+                  button.disabled = false;
+                }, 2000);
+              }
+            }}
+            disabled={!hasChanges}
+            title="Save summary changes"
+            style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
+          >
+            <i className="bi bi-save me-1"></i> Save
+          </button>
+        </div>
+      </div>
+
       <div className="flex-grow-1 d-flex flex-column" style={{minHeight: '0'}}>
-          <div className="mb-3 flex-grow-1 d-flex flex-column" style={{minHeight: '0'}}>
+          <div className="flex-grow-1 d-flex flex-column" style={{minHeight: '0'}}>
             <div className="border rounded" style={{flexGrow: 1, display: 'flex', flexDirection: 'column'}}>
-              
+
               {/* Editor Content */}
-              <div className="p-3 overflow-auto" style={{flexGrow: 1, minHeight: '400px'}}>
+              <div className="overflow-auto" style={{flexGrow: 1, minHeight: '400px'}}>
                 <style>
                   {`
                     .wysiwyg-editor {
@@ -375,74 +455,31 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
                   `}
                 </style>
                 <div className="editor-toolbar">
-                  <div className="d-flex align-items-center justify-content-between">
-                    <div className="d-flex align-items-center gap-2">
-                      <button className="toolbar-btn" onClick={() => insertFormatting('**', '**')} title="Bold">
-                        <i className="bi bi-type-bold"></i>
-                      </button>
-                      <button className="toolbar-btn" onClick={() => insertFormatting('*', '*')} title="Italic">
-                        <i className="bi bi-type-italic"></i>
-                      </button>
-                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                      <button className="toolbar-btn" onClick={() => insertFormatting('## ', '')} title="Heading 2">
-                        H2
-                      </button>
-                      <button className="toolbar-btn" onClick={() => insertFormatting('### ', '')} title="Heading 3">
-                        H3
-                      </button>
-                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                      <button className="toolbar-btn" onClick={() => insertFormatting('- ', '')} title="Bullet List">
-                        <i className="bi bi-list-ul"></i>
-                      </button>
-                      <button className="toolbar-btn" onClick={() => insertFormatting('1. ', '')} title="Numbered List">
-                        <i className="bi bi-list-ol"></i>
-                      </button>
-                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                      <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference">
-                        <i className="bi bi-link-45deg"></i> Ref
-                      </button>
-                    </div>
-                    <div className="d-flex align-items-center gap-2">
-                      <button
-                        className={`btn btn-sm ${hasChanges ? 'btn-outline-success' : 'btn-outline-secondary'}`}
-                        onClick={async (event) => {
-                          if (!hasChanges) return;
-
-                          const button = event.currentTarget as HTMLButtonElement;
-                          const originalText = button.innerHTML;
-                          button.innerHTML = '<span className="spinner-border spinner-border-sm me-1"></span>Saving...';
-                          button.disabled = true;
-
-                          const success = await saveSummary();
-
-                          if (success) {
-                            button.innerHTML = '<i className="bi bi-check-circle me-1"></i> Saved!';
-                            button.classList.remove('btn-outline-success');
-                            button.classList.add('btn-success');
-                            setTimeout(() => {
-                              button.innerHTML = originalText;
-                              button.classList.remove('btn-success');
-                              button.classList.add('btn-outline-success');
-                              button.disabled = false;
-                            }, 2000);
-                          } else {
-                            button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
-                            button.classList.remove('btn-outline-success');
-                            button.classList.add('btn-danger');
-                            setTimeout(() => {
-                              button.innerHTML = originalText;
-                              button.classList.remove('btn-danger');
-                              button.classList.add('btn-outline-success');
-                              button.disabled = false;
-                            }, 2000);
-                          }
-                        }}
-                        disabled={!hasChanges}
-                        title="Save summary changes"
-                      >
-                        <i className="bi bi-save me-1"></i> Save
-                      </button>
-                    </div>
+                  <div className="d-flex align-items-center gap-2">
+                    <button className="toolbar-btn" onClick={() => insertFormatting('**', '**')} title="Bold">
+                      <i className="bi bi-type-bold"></i>
+                    </button>
+                    <button className="toolbar-btn" onClick={() => insertFormatting('*', '*')} title="Italic">
+                      <i className="bi bi-type-italic"></i>
+                    </button>
+                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                    <button className="toolbar-btn" onClick={() => insertFormatting('## ', '')} title="Heading 2">
+                      H2
+                    </button>
+                    <button className="toolbar-btn" onClick={() => insertFormatting('### ', '')} title="Heading 3">
+                      H3
+                    </button>
+                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                    <button className="toolbar-btn" onClick={() => insertFormatting('- ', '')} title="Bullet List">
+                      <i className="bi bi-list-ul"></i>
+                    </button>
+                    <button className="toolbar-btn" onClick={() => insertFormatting('1. ', '')} title="Numbered List">
+                      <i className="bi bi-list-ol"></i>
+                    </button>
+                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                    <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference">
+                      <i className="bi bi-link-45deg"></i> Ref
+                    </button>
                   </div>
                 </div>
                 <div
@@ -451,6 +488,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
                   contentEditable
                   suppressContentEditableWarning={true}
                   onInput={handleWysiwygInput}
+                  onFocus={handleEditorFocus}
                   onBlur={handleEditorBlur}
                   onClick={(e) => {
                     const target = e.target as HTMLElement;
