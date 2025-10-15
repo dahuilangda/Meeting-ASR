@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { MarkdownViewer } from '../components/MarkdownViewer';
+import { SummaryWithReferences } from '../components/SummaryWithReferences';
 import MarkdownEditor from '@uiw/react-markdown-editor';
 import { AssistantChat } from '../components/AssistantChat';
 
@@ -16,6 +17,14 @@ interface JobDetails {
     summary: string | null;
 }
 
+interface TranscriptSegment {
+    index: number;
+    speaker: string;
+    text: string;
+    start_time: number;
+    end_time: number;
+}
+
 export function JobDetailPage() {
     const { jobId } = useParams<{ jobId: string }>();
     const [job, setJob] = useState<JobDetails | null>(null);
@@ -24,6 +33,8 @@ export function JobDetailPage() {
     const [isEditingSummary, setIsEditingSummary] = useState(false);
     const [editedSummary, setEditedSummary] = useState('');
     const [isAssistantOpen, setIsAssistantOpen] = useState(false);
+    const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+    const transcriptEditorRef = useRef<HTMLDivElement>(null);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -35,11 +46,55 @@ export function JobDetailPage() {
     const [activeTab, setActiveTab] = useState(getInitialTab);
     
     const [isSummarizing, setIsSummarizing] = useState(false);
-    
+
+    const handleSegmentReference = (segmentIndex: number) => {
+        // Switch to transcript tab
+        setActiveTab('transcript');
+
+        // Scroll to the referenced segment after a short delay to allow tab switching
+        setTimeout(() => {
+            const segmentElements = document.querySelectorAll('.transcript-segment');
+            const targetElement = segmentElements[segmentIndex - 1] as HTMLElement; // -1 because segments are 1-indexed
+
+            if (targetElement) {
+                targetElement.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+
+                // Highlight the segment temporarily
+                targetElement.style.backgroundColor = '#fff3cd';
+                targetElement.style.transition = 'background-color 2s';
+
+                setTimeout(() => {
+                    targetElement.style.backgroundColor = '';
+                }, 3000);
+            }
+        }, 100);
+    };
+
     useEffect(() => {
         if (jobId) {
             apiClient.get(`/jobs/${jobId}`).then(response => {
-                setJob(response.data as JobDetails);
+                const jobData = response.data as JobDetails;
+                setJob(jobData);
+
+                // Parse transcript segments for reference mapping
+                if (jobData.timing_info) {
+                    try {
+                        const timingData = JSON.parse(jobData.timing_info);
+                        const segments = timingData.map((item: any, index: number) => ({
+                            index: index + 1,
+                            speaker: item.speaker || 'Unknown',
+                            text: item.text || '',
+                            start_time: item.start_time || 0,
+                            end_time: item.end_time || 0
+                        }));
+                        setTranscriptSegments(segments);
+                    } catch (error) {
+                        console.error("Error parsing timing info:", error);
+                    }
+                }
             }).catch(err => {
                 setError('Failed to fetch job details.');
             });
@@ -241,60 +296,13 @@ export function JobDetailPage() {
                         </div>
                         
                         <div className={`tab-pane fade ${activeTab === 'summary' ? 'show active' : ''}`}>
-                            <div className="d-flex justify-content-between align-items-center mb-3">
-                                <h5 className="card-title">Meeting Summary</h5>
-                                {job?.summary && !isEditingSummary && (
-                                    <button 
-                                        className="btn btn-outline-secondary btn-sm"
-                                        onClick={() => {
-                                            setEditedSummary(job.summary || '');
-                                            setIsEditingSummary(true);
-                                        }}
-                                    >
-                                        <i className="bi bi-pencil me-1"></i> Edit Summary
-                                    </button>
-                                )}
-                                {isEditingSummary && (
-                                    <div className="d-flex gap-2">
-                                        <button 
-                                            className="btn btn-success btn-sm"
-                                            onClick={handleSaveSummary}
-                                        >
-                                            <i className="bi bi-save me-1"></i> Save
-                                        </button>
-                                        <button 
-                                            className="btn btn-secondary btn-sm"
-                                            onClick={() => setIsEditingSummary(false)}
-                                        >
-                                            <i className="bi bi-x me-1"></i> Cancel
-                                        </button>
-                                    </div>
-                                )}
+                            <div ref={transcriptEditorRef}>
+                                <SummaryWithReferences
+                                    summary={job?.summary}
+                                    transcriptSegments={transcriptSegments}
+                                    onSegmentClick={handleSegmentReference}
+                                />
                             </div>
-                            
-                            {job.summary ? (
-                                isEditingSummary ? (
-                                    <div style={{ height: '500px' }}>
-                                        <MarkdownEditor
-                                            value={editedSummary}
-                                            onChange={(value) => setEditedSummary(value)}
-                                            className="w-100"
-                                            style={{ height: '100%' }}
-                                        />
-                                    </div>
-                                ) : (
-                                    <div className="border rounded p-3 bg-light" style={{ minHeight: '300px' }}>
-                                        <MarkdownViewer content={job.summary} />
-                                    </div>
-                                )
-                            ) : isSummarizing ? (
-                                <div className="alert alert-info d-flex align-items-center">
-                                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-                                    Generating meeting summary... You can switch tabs, generation will continue in the background.
-                                </div>
-                            ) : (
-                                <div className="alert alert-info">No summary generated yet. Click the Generate Summary button to create one.</div>
-                            )}
                         </div>
                         
                     </div>

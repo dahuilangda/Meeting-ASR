@@ -6,3 +6,6 @@ frontend/.env
 frontend/.gitignore
 sqlite.db
 .gitignore
+backend/uploads/
+backend/venv/
+backend/.deps_installed

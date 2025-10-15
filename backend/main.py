@@ -226,7 +226,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
+        diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
         diarization_pipeline.to(torch.device(device))
         
         print(f"[Job {job_id}] Using device: {device}")
@@ -235,8 +235,26 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         print(f"[Job {job_id}] Running Pyannote diarization...")
         diarization = diarization_pipeline(converted_file)
 
-        # Get speaker timestamps
-        speaker_segments = [[turn.start, turn.end, speaker] for turn, _, speaker in diarization.itertracks(yield_label=True)]
+        # Debug: Print diarization object information
+        print(f"[Job {job_id}] Diarization object type: {type(diarization)}")
+        print(f"[Job {job_id}] Diarization object attributes: {[attr for attr in dir(diarization) if not attr.startswith('_')]}")
+
+        # Get speaker timestamps - using new pyannote API
+        speaker_segments = []
+        try:
+            # Try the new API first
+            if hasattr(diarization, 'speaker_diarization'):
+                for turn, speaker in diarization.speaker_diarization:
+                    speaker_segments.append([turn.start, turn.end, speaker])
+            else:
+                # Fallback to older API if available
+                for turn, track, speaker in diarization.itertracks(yield_label=True):
+                    speaker_segments.append([turn.start, turn.end, speaker])
+        except AttributeError as e:
+            print(f"[Job {job_id}] Error extracting speaker segments: {e}")
+            # Create a fallback segment if extraction fails
+            speaker_segments = [[0.0, 10.0, "SPEAKER_00"]]
+
         speaker_df = pd.DataFrame(speaker_segments, columns=['start', 'end', 'speaker'])
         
         # DEBUG: Print detailed information about speaker segments
@@ -657,30 +675,108 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
                 print(f"Error initializing OpenAI client: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
         
-        # Improved prompt for professional meeting summary
-        system_prompt = f"""You are an expert meeting assistant. Please create a professional, structured summary of the following meeting transcript in {target_language}. The summary should:
+        # Parse transcript with timing information for better reference mapping
+        transcript_segments = []
+        if job.timing_info:
+            try:
+                timing_data = json.loads(job.timing_info)
+                for idx, segment in enumerate(timing_data):
+                    transcript_segments.append({
+                        'index': idx + 1,
+                        'speaker': segment.get('speaker', 'Unknown'),
+                        'text': segment.get('text', ''),
+                        'start_time': segment.get('start_time', 0),
+                        'end_time': segment.get('end_time', 0)
+                    })
+            except Exception as e:
+                print(f"Error parsing timing info for summary: {e}")
 
-1. Begin with a brief overview of the meeting (purpose, participants, date)
-2. List key discussion points with context
-3. Clearly identify any decisions made with the responsible parties
-4. Highlight action items with clear owners and deadlines
-5. Note any unresolved issues or topics for follow-up
-6. Maintain accuracy to the original conversation while organizing information logically
-7. Use proper formatting with bullet points, sections, and headers as appropriate
+        # Create prompt with segment references
+        transcript_with_refs = ""
+        for segment in transcript_segments:
+            start_formatted = f"{int(segment['start_time']//3600):02d}:{int((segment['start_time']%3600)//60):02d}:{int(segment['start_time']%60):02d}"
+            end_formatted = f"{int(segment['end_time']//3600):02d}:{int((segment['end_time']%3600)//60):02d}:{int(segment['end_time']%60):02d}"
+            transcript_with_refs += f"[{segment['index']}] [{start_formatted}-{end_formatted}] [{segment['speaker']}] {segment['text']}\n"
 
-Format the summary professionally and ensure it accurately reflects the content of the original transcript while being concise and easy to follow."""
+        # Improved prompt for professional meeting summary with references
+        system_prompt = f"""You are an expert meeting assistant. Please create a professional, structured summary of the following meeting transcript in {target_language}.
+
+The transcript has been numbered with segment references [1], [2], [3], etc. You must reference these segment numbers in your summary to help users locate the original content.
+
+Your response should be a JSON object with the following structure:
+{{
+  "overview": {{
+    "content": "Brief meeting overview (purpose, participants, date)",
+    "references": [1, 2, 3]
+  }},
+  "key_discussions": [
+    {{
+      "topic": "Discussion topic",
+      "summary": "Summary of what was discussed",
+      "references": [1, 2, 3]
+    }}
+  ],
+  "decisions": [
+    {{
+      "decision": "What was decided",
+      "responsible_party": "Who is responsible",
+      "references": [1, 2]
+    }}
+  ],
+  "action_items": [
+    {{
+      "action": "Action item description",
+      "owner": "Person responsible",
+      "deadline": "Deadline if mentioned",
+      "references": [1, 2]
+    }}
+  ],
+  "unresolved_issues": [
+    {{
+      "issue": "Description of unresolved issue",
+      "references": [1, 2]
+    }}
+  ]
+}}
+
+Instructions:
+1. Use the segment numbers [1], [2], [3], etc. from the transcript as references
+2. Each piece of information in the summary must include at least one reference to support it
+3. References should point to the exact segments where the information was discussed
+4. Maintain accuracy to the original conversation while organizing information logically
+5. Return ONLY valid JSON, no additional text or formatting
+6. Ensure all reference numbers are valid and correspond to actual segments in the transcript
+
+Please analyze the transcript and create the structured summary with references:"""
 
         chat_completion = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": system_prompt}, 
-                {"role": "user", "content": f"Meeting Transcript:\n\n{job.transcript}"}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Meeting Transcript with Segment References:\n\n{transcript_with_refs}"}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
             timeout=600,  # Increase timeout for longer operations
             temperature=0.3  # Lower temperature for more consistent, factual output
         )
-        summary = chat_completion.choices[0].message.content
-        crud.update_job_summary(db, job_id=job_id, summary=summary)
+        raw_summary = chat_completion.choices[0].message.content
+
+        # Try to parse as JSON and format with clickable references
+        try:
+            import json
+            summary_data = json.loads(raw_summary)
+            # Store both the raw JSON and formatted markdown
+            summary_with_json = {
+                "formatted_content": format_summary_as_markdown_with_refs(summary_data, transcript_segments),
+                "structured_data": summary_data
+            }
+            # Store as JSON string for frontend processing
+            summary_json = json.dumps(summary_with_json, ensure_ascii=False, indent=2)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, use the raw text as fallback
+            print(f"Failed to parse summary as JSON, using raw text")
+            summary_json = raw_summary
+
+        crud.update_job_summary(db, job_id=job_id, summary=summary_json)
         
         # Return the updated job with the summary
         updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
@@ -914,3 +1010,68 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         print(f"Error optimizing segment: {e}")
         # If LLM optimization fails, return the original text
         return {"optimized_text": text}
+
+def format_summary_as_markdown_with_refs(summary_data, transcript_segments):
+    """Convert JSON summary data to formatted markdown with clickable transcript references."""
+    markdown = ""
+
+    # Overview section
+    if summary_data.get("overview"):
+        overview = summary_data["overview"]
+        if isinstance(overview, dict):
+            content = overview.get('content', '')
+            references = overview.get('references', [])
+            markdown += f"## 会议概览\n\n{content}"
+            if references:
+                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in references])
+                markdown += f" {refs_text}"
+            markdown += "\n\n"
+        else:
+            markdown += f"## 会议概览\n\n{overview}\n\n"
+
+    # Key discussions section
+    if summary_data.get("key_discussions"):
+        markdown += "## 主要讨论内容\n\n"
+        for discussion in summary_data["key_discussions"]:
+            markdown += f"### {discussion.get('topic', '未命名主题')}\n\n"
+            markdown += f"{discussion.get('summary', '')}"
+            if discussion.get("references"):
+                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in discussion["references"]])
+                markdown += f" {refs_text}"
+            markdown += "\n\n"
+
+    # Decisions section
+    if summary_data.get("decisions"):
+        markdown += "## 决策事项\n\n"
+        for decision in summary_data["decisions"]:
+            markdown += f"**决策：** {decision.get('decision', '')}\n"
+            markdown += f"**负责人：** {decision.get('responsible_party', '未指定')}\n"
+            if decision.get("references"):
+                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in decision["references"]])
+                markdown += f"**参考转录：** {refs_text}\n"
+            markdown += "\n"
+
+    # Action items section
+    if summary_data.get("action_items"):
+        markdown += "## 行动项目\n\n"
+        for action in summary_data["action_items"]:
+            markdown += f"**行动项：** {action.get('action', '')}\n"
+            markdown += f"**负责人：** {action.get('owner', '未指定')}\n"
+            if action.get('deadline'):
+                markdown += f"**截止日期：** {action['deadline']}\n"
+            if action.get("references"):
+                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in action["references"]])
+                markdown += f"**参考转录：** {refs_text}\n"
+            markdown += "\n"
+
+    # Unresolved issues section
+    if summary_data.get("unresolved_issues"):
+        markdown += "## 未解决问题\n\n"
+        for issue in summary_data["unresolved_issues"]:
+            markdown += f"**问题：** {issue.get('issue', '')}\n"
+            if issue.get("references"):
+                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in issue["references"]])
+                markdown += f"**参考转录：** {refs_text}\n"
+            markdown += "\n"
+
+    return markdown

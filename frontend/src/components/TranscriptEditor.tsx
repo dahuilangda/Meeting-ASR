@@ -17,14 +17,16 @@ interface TranscriptEditorProps {
 }
 
 export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
-  jobId, 
-  initialTranscript, 
-  onTranscriptUpdate 
+  jobId,
+  initialTranscript,
+  onTranscriptUpdate
 }) => {
-  useState<string | null>(initialTranscript);
+  const [transcript, setTranscript] = useState<string | null>(initialTranscript);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [originalTranscript, setOriginalTranscript] = useState<TranscriptSegment[] | null>(null);
+  const [hasChanges, setHasChanges] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
@@ -32,6 +34,18 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
   // Removed unused state variables: translatedSegments, isTranslating
   const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const formatTime = (seconds: number): string => {
+    if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) {
+      return '00:00:00';
+    }
+
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   useEffect(() => {
     if (editingSpeakerForSegment !== null && renameInputRef.current) {
@@ -47,10 +61,20 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   }, [editingSpeakerForSegment]);
   
   const buildTranscriptPayload = (updatedSegments: TranscriptSegment[]) => {
+    console.log("Building payload with segments:", updatedSegments); // Debug log
     return {
       transcript: updatedSegments.map((segment, index) => {
-        const safeStart = Number.isFinite(segment.startTime) ? segment.startTime : index * 5;
-        const safeEnd = Number.isFinite(segment.endTime) ? segment.endTime : safeStart + 5;
+        // Use the segment's actual timing if available and valid
+        const safeStart = (segment.startTime >= 0 && Number.isFinite(segment.startTime)) ? segment.startTime : index * 5;
+        const safeEnd = (segment.endTime >= 0 && Number.isFinite(segment.endTime)) ? segment.endTime : safeStart + 5;
+
+        console.log(`Payload segment ${index}:`, {
+          start_time: safeStart,
+          end_time: safeEnd,
+          original_start: segment.startTime,
+          original_end: segment.endTime
+        }); // Debug log
+
         return {
           line_number: index,
           text: segment.text || '',
@@ -280,23 +304,33 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         if (jobDetails.timing_info) {
           try {
             const timingData = JSON.parse(jobDetails.timing_info);
-            const parsedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
-              id: index,
-              text: item.text,
-              startTime: item.start_time,
-              endTime: item.end_time,
-              speaker: item.speaker,
-              doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
-            }));
+            console.log("Timing data received:", timingData); // Debug log
+            const parsedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => {
+              const segment = {
+                id: index,
+                text: item.text || '',
+                startTime: parseFloat(item.start_time) || 0,
+                endTime: parseFloat(item.end_time) || 0,
+                speaker: item.speaker || 'Unknown',
+                doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
+              };
+              console.log(`Segment ${index}:`, segment); // Debug log
+              return segment;
+            });
             setSegments(parsedSegments);
+            setOriginalTranscript(parsedSegments); // Store original transcript
           } catch (error) {
             console.error("Error parsing timing info:", error);
             // Fallback to parsing transcript text if timing info is invalid
-            setSegments(parseTranscriptFallback(jobDetails.transcript || ''));
+            const fallbackSegments = parseTranscriptFallback(jobDetails.transcript || '');
+            setSegments(fallbackSegments);
+            setOriginalTranscript(fallbackSegments);
           }
         } else {
           // If no timing info available, parse from transcript text
-          setSegments(parseTranscriptFallback(jobDetails.transcript || ''));
+          const fallbackSegments = parseTranscriptFallback(jobDetails.transcript || '');
+          setSegments(fallbackSegments);
+          setOriginalTranscript(fallbackSegments);
         }
         
         // Create an authenticated audio URL by fetching the audio file content and creating a blob URL
@@ -341,7 +375,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   // Fallback function to parse transcript when timing info is not available
   const parseTranscriptFallback = (transcriptText: string): TranscriptSegment[] => {
     if (!transcriptText) return [];
-    
+
     const lines = transcriptText.split('\n').filter(line => line.trim() !== '');
     return lines.map((line, index) => {
       const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
@@ -349,19 +383,50 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         return {
           id: index,
           text: match[2],
-          startTime: !isNaN(index * 5) ? index * 5 : 0, // Placeholder timing
-          endTime: !isNaN((index + 1) * 5) ? (index + 1) * 5 : 5, // Placeholder timing
+          startTime: index * 5, // Improved fallback timing: 0, 5, 10, 15...
+          endTime: (index + 1) * 5,
           speaker: match[1]
         };
       }
       return {
         id: index,
         text: line,
-        startTime: !isNaN(index * 5) ? index * 5 : 0,
-        endTime: !isNaN((index + 1) * 5) ? (index + 1) * 5 : 5,
+        startTime: index * 5,
+        endTime: (index + 1) * 5,
         speaker: 'Unknown'
       };
     });
+  };
+
+  // Function to refresh transcript segments with latest timing data
+  const refreshTranscriptSegments = async () => {
+    try {
+      const response = await apiClient.get(`/jobs/${jobId}`);
+      const jobDetails: any = response.data;
+
+      if (jobDetails.timing_info) {
+        try {
+          const timingData = JSON.parse(jobDetails.timing_info);
+          console.log("Refreshing with timing data:", timingData); // Debug log
+          const refreshedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
+            id: index,
+            text: item.text || '',
+            startTime: parseFloat(item.start_time) || 0,
+            endTime: parseFloat(item.end_time) || 0,
+            speaker: item.speaker || 'Unknown',
+            doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
+          }));
+
+          console.log("Refreshed segments:", refreshedSegments); // Debug log
+          setSegments(refreshedSegments);
+          setOriginalTranscript(refreshedSegments);
+        } catch (error) {
+          console.error("Error refreshing timing info:", error);
+        }
+      }
+    } catch (error) {
+      console.error("Error refreshing transcript:", error);
+    }
   };
 
   const editorRef = useRef<HTMLDivElement>(null);
@@ -380,6 +445,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   }, []);
 
   const handleSpeakerPlay = (startTime: number, segmentId: number) => {
+    console.log(`Playing segment ${segmentId} at time ${startTime}s`); // Debug log
     if (audioRef.current) {
       audioRef.current.currentTime = startTime;
       audioRef.current.play();
@@ -456,65 +522,83 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
 
   return (
     <div className="transcript-editor" ref={editorRef}>
-      <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
-        <div className="d-flex gap-2 align-items-center">
-          <button 
-            className="btn btn-outline-success btn-sm"
-            onClick={handleOptimizeAll}
-          >
-            <i className="bi bi-magic me-1"></i> Optimize All
-          </button>
-        </div>
-        <div className="d-flex align-items-center gap-2 ms-auto">
+      <div className="d-flex align-items-center justify-content-between mb-2">
+        <div className="d-flex align-items-center gap-2">
           {audioUrl && !isAudioLoading ? (
             <>
-              <audio 
-                ref={audioRef} 
-                src={audioUrl} 
+              <audio
+                ref={audioRef}
+                src={audioUrl}
                 onEnded={handleAudioEnd}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onError={handleAudioError}
               />
-              <button 
-                className="btn btn-outline-secondary" 
+              <button
+                className="btn btn-sm btn-outline-secondary"
                 onClick={handlePlayPause}
                 disabled={!!audioError}
               >
-                {isPlaying ? 'Pause' : 'Play All Audio'}
+                {isPlaying ? (
+                  <i className="bi bi-pause-fill"></i>
+                ) : (
+                  <i className="bi bi-play-fill"></i>
+                )}
               </button>
             </>
           ) : isAudioLoading ? (
-            <span className="text-muted">Loading audio...</span>
+            <span className="text-muted"><span className="spinner-border spinner-border-sm me-1"></span>Loading...</span>
           ) : (
             <span className="text-muted">Audio unavailable</span>
           )}
         </div>
+
+        <div className="d-flex align-items-center gap-1">
+          <button
+            className="btn btn-sm btn-outline-success"
+            onClick={() => {
+              // Save current changes to backend and update original
+              saveTranscript(segments).then(() => {
+                setOriginalTranscript([...segments]);
+                setHasChanges(false);
+              });
+            }}
+            disabled={!hasChanges}
+            title="Save current changes"
+          >
+            <i className="bi bi-save"></i> Save
+          </button>
+          <button
+            className="btn btn-sm btn-outline-warning"
+            onClick={() => {
+              // Reset to original
+              if (originalTranscript) {
+                setSegments([...originalTranscript]);
+                setHasChanges(false);
+              }
+            }}
+            disabled={!hasChanges || !originalTranscript}
+            title="Reset to original"
+          >
+            <i className="bi bi-arrow-clockwise"></i> Reset
+          </button>
+        </div>
       </div>
 
       {audioError && (
-        <div className="alert alert-warning mb-3">
+        <div className="alert alert-warning py-1 mb-2">
           <small>{audioError}</small>
         </div>
       )}
 
-      <div className="transcript-container">
+      <div className="transcript-container" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
         {groupedSegments.map((group, index) => {
-          // Generate a consistent color based on speaker name for visual distinction
           const getSpeakerColor = (speaker: string) => {
-            // Create a consistent color mapping based on speaker name
             const colors = [
-              '#e3f2fd', // light blue
-              '#f3e5f5', // light purple  
-              '#e8f5e8', // light green
-              '#fff3e0', // light orange
-              '#fce4ec', // light pink
-              '#f1f8e9', // light lime
-              '#e0f7fa', // light cyan
-              '#fff8e1', // light yellow
+              '#e3f2fd', '#f3e5f5', '#e8f5e8', '#fff3e0', '#fce4ec',
+              '#f1f8e9', '#e0f7fa', '#fff8e1'
             ];
-            
-            // Create a hash of the speaker name to get consistent colors
+
             let hash = 0;
             for (let i = 0; i < speaker.length; i++) {
               hash = speaker.charCodeAt(i) + ((hash << 5) - hash);
@@ -522,21 +606,13 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             const index = Math.abs(hash) % colors.length;
             return colors[index];
           };
-          
-          // Generate a border color that's slightly darker than the background for better definition
+
           const getSpeakerBorderColor = (speaker: string) => {
             const colors = [
-              '#bbdefb', // medium blue
-              '#e1bee7', // medium purple
-              '#c8e6c9', // medium green
-              '#ffe0b2', // medium orange
-              '#f8bbd0', // medium pink
-              '#dcedc8', // medium lime
-              '#b2ebf2', // medium cyan
-              '#fff59d', // medium yellow
+              '#bbdefb', '#e1bee7', '#c8e6c9', '#ffe0b2', '#f8bbd0',
+              '#dcedc8', '#b2ebf2', '#fff59d'
             ];
-            
-            // Create a hash of the speaker name to get consistent colors
+
             let hash = 0;
             for (let i = 0; i < speaker.length; i++) {
               hash = speaker.charCodeAt(i) + ((hash << 5) - hash);
@@ -544,29 +620,29 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             const index = Math.abs(hash) % colors.length;
             return colors[index];
           };
-          
+
           const bgColor = getSpeakerColor(group.speaker);
           const borderColor = getSpeakerBorderColor(group.speaker);
           const isCurrentlyPlaying = currentSpeakerPlaying === group.id;
           const isEditing = editingSegmentId === group.id;
-          
+
           return (
-            <div 
-              key={group.id} 
-              className={`transcript-segment p-3 mb-3 rounded border ${isEditing ? 'border-primary' : ''}`}
-              style={{ 
+            <div
+              key={group.id}
+              className={`transcript-segment p-2 mb-2 rounded border ${isEditing ? 'border-primary' : ''}`}
+              style={{
                 fontSize: '0.9rem',
                 backgroundColor: bgColor,
                 borderColor: isEditing ? '#007bff' : borderColor,
-                borderLeftWidth: '4px',
-                boxShadow: isCurrentlyPlaying ? '0 0 8px rgba(0,0,0,0.2)' : 'none'
+                borderLeftWidth: '3px',
+                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : 'none'
               }}
             >
-              <div className="segment-header d-flex justify-content-between align-items-center mb-2">
+              <div className="segment-header d-flex justify-content-between align-items-center mb-1">
                 <div className="d-flex align-items-center gap-2">
                   {editingSpeakerForSegment === group.id ? (
                     <div className="d-flex align-items-center">
-                      <input 
+                      <input
                         ref={renameInputRef}
                         type="text"
                         defaultValue={group.speaker}
@@ -578,34 +654,35 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           }
                         }}
                         onBlur={(e) => {
-                          // Only change if the value is different
                           if (e.target.value !== group.speaker) {
                             handleSpeakerNameChange(group.speaker, e.target.value);
                           } else {
                             setEditingSpeakerForSegment(null);
                           }
                         }}
-                        className="form-control form-control-sm me-2"
-                        // Remove autoFocus to avoid scrolling issues
+                        className="form-control form-control-sm me-1"
+                        style={{ fontSize: '0.8rem', width: '120px' }}
                       />
-                      <button 
-                        className="btn btn-sm btn-outline-secondary"
+                      <button
+                        className="btn btn-sm btn-outline-secondary py-0"
                         onClick={() => setEditingSpeakerForSegment(null)}
+                        style={{ fontSize: '0.7rem' }}
                       >
-                        Cancel
+                        ✕
                       </button>
                     </div>
                   ) : (
                     <div className="dropdown">
-                      <button 
-                        className="btn btn-sm dropdown-toggle" 
-                        type="button" 
-                        data-bs-toggle="dropdown" 
+                      <button
+                        className="btn btn-sm dropdown-toggle py-0"
+                        type="button"
+                        data-bs-toggle="dropdown"
                         aria-expanded="false"
-                        style={{ 
+                        style={{
                           backgroundColor: borderColor,
                           color: '#000',
-                          fontSize: '0.8rem' 
+                          fontSize: '0.8rem',
+                          padding: '2px 8px'
                         }}
                       >
                         {group.speaker}
@@ -613,10 +690,10 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       <ul className="dropdown-menu">
                         {uniqueSpeakers.map(speaker => (
                           <li key={speaker}>
-                            <button 
+                            <button
                               className="dropdown-item"
                               onClick={(e) => {
-                                e.stopPropagation(); // Prevent dropdown from closing before action
+                                e.stopPropagation();
                                 handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker);
                               }}
                             >
@@ -626,7 +703,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                         ))}
                         <li><hr className="dropdown-divider" /></li>
                         <li>
-                          <button 
+                          <button
                             className="dropdown-item"
                             onClick={(e) => {
                               e.preventDefault();
@@ -640,64 +717,66 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       </ul>
                     </div>
                   )}
-                  <small className="text-muted" style={{ fontSize: '0.75rem' }}>
-                    {isNaN(group.startTime) || !isFinite(group.startTime) ? '00:00:00' : new Date(group.startTime * 1000).toISOString().substr(11, 8)} - {isNaN(group.endTime) || !isFinite(group.endTime) ? '00:00:00' : new Date(group.endTime * 1000).toISOString().substr(11, 8)}
+                  <small className="text-muted" style={{ fontSize: '0.7rem' }}>
+                    {formatTime(group.startTime)} - {formatTime(group.endTime)}
                   </small>
+                  <span className="badge bg-secondary ms-1" style={{ fontSize: '0.65rem' }}>
+                    {index + 1}
+                  </span>
                 </div>
-                <div className='d-flex align-items-center gap-2'>
+                <div className='d-flex align-items-center gap-1'>
                   <button
-                    className="btn btn-sm btn-outline-primary"
+                    className="btn btn-sm btn-outline-primary py-0"
                     onClick={() => handleSplitSegment(group.id)}
+                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    title="Split segment"
                   >
-                    <i className="bi bi-scissors me-1"></i>
-                    Split
+                    <i className="bi bi-scissors"></i>
                   </button>
                   <button
-                    className="btn btn-sm btn-outline-danger"
+                    className="btn btn-sm btn-outline-danger py-0"
                     onClick={() => handleDeleteSegment(group.originalSegments.map(s => s.id))}
+                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    title="Delete segment"
                   >
-                    <i className="bi bi-trash-fill me-1"></i>
-                    Delete
+                    <i className="bi bi-trash"></i>
                   </button>
                   <button
-                    className="btn btn-sm btn-outline-secondary"
+                    className="btn btn-sm btn-outline-secondary py-0"
                     onClick={() => handleMergeSegment(group.id)}
+                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    title="Merge with next"
                   >
-                    <i className="bi bi-union me-1"></i>
-                    Merge with next
+                    <i className="bi bi-link"></i>
                   </button>
-                  <button 
-                    className={`btn btn-sm ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
+                  <button
+                    className={`btn btn-sm py-0 ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
                     onClick={() => isCurrentlyPlaying ? handleSpeakerPause() : handleSpeakerPlay(group.startTime, group.id)}
                     title={isCurrentlyPlaying ? 'Stop playback' : 'Play this section'}
                     disabled={isAudioLoading || !!audioError}
+                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
                   >
                     {isCurrentlyPlaying ? (
-                      <>
-                        <i className="bi bi-stop-fill me-1"></i> Stop
-                      </>
+                      <i className="bi bi-stop-fill"></i>
                     ) : isAudioLoading ? (
-                      <>
-                        <span className="spinner-border spinner-border-sm me-1" role="status"></span> Loading
-                      </>
+                      <span className="spinner-border spinner-border-sm" role="status"></span>
                     ) : (
-                      <>
-                        <i className="bi bi-play-fill me-1"></i> Play
-                      </>
+                      <i className="bi bi-play-fill"></i>
                     )}
                   </button>
                 </div>
               </div>
-              <div 
+              <div
                 contentEditable={isEditing}
                 suppressContentEditableWarning={true}
-                className="mb-0" 
-                style={{ 
-                  lineHeight: '1.5',
+                className="mb-0"
+                style={{
+                  lineHeight: '1.4',
                   cursor: isEditing ? 'text' : 'pointer',
                   outline: isEditing ? '1px solid #007bff' : 'none',
-                  padding: isEditing ? '0.5rem' : '0',
+                  padding: isEditing ? '0.25rem' : '0',
                   borderRadius: isEditing ? '0.25rem' : '0',
+                  minHeight: '1.2rem'
                 }}
                 onBlur={(e) => {
                   if (!e.relatedTarget || !editorRef.current?.contains(e.relatedTarget as Node)) {
@@ -725,6 +804,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                     }, []);
 
                     setSegments(updatedSegments);
+                    setHasChanges(true);
                     saveTranscript(updatedSegments);
                     setEditingSegmentId(null);
                   }
@@ -733,8 +813,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               >
                 {group.text}
               </div>
-              
-
             </div>
           );
         })}
