@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
@@ -56,7 +56,7 @@ export function JobDetailPage() {
         document.body.style.userSelect = 'none';
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = useCallback((e: MouseEvent) => {
         if (!isResizing || !containerRef.current) return;
 
         const containerRect = containerRef.current.getBoundingClientRect();
@@ -65,13 +65,13 @@ export function JobDetailPage() {
         // Constrain width between 30% and 80%
         const constrainedWidth = Math.max(30, Math.min(80, newLeftWidth));
         setLeftPanelWidth(constrainedWidth);
-    };
+    }, [isResizing]);
 
-    const handleMouseUp = () => {
+    const handleMouseUp = useCallback(() => {
         setIsResizing(false);
         document.body.style.cursor = 'default';
         document.body.style.userSelect = 'auto';
-    };
+    }, []);
 
     useEffect(() => {
         if (isResizing) {
@@ -83,7 +83,7 @@ export function JobDetailPage() {
                 document.removeEventListener('mouseup', handleMouseUp);
             };
         }
-    }, [isResizing]);
+    }, [isResizing, handleMouseMove, handleMouseUp]);
 
     const handleSegmentReference = (segmentIndices: number | number[]) => {
         const indices = Array.isArray(segmentIndices) ? segmentIndices : [segmentIndices];
@@ -154,7 +154,7 @@ export function JobDetailPage() {
                         console.error("Error parsing timing info:", error);
                     }
                 }
-            }).catch(err => {
+            }).catch(() => {
                 setError('Failed to fetch job details.');
             });
         }
