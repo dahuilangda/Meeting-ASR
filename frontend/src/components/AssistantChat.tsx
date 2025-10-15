@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ChatMessagePayload, ChatResponse, sendAssistantChat } from '../api';
@@ -42,6 +42,17 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showQuickPrompts, setShowQuickPrompts] = useState(true);
+
+  // Draggable and resizable state
+  const [position, setPosition] = useState({ x: window.innerWidth - 400, y: window.innerHeight - 600 });
+  const [size, setSize] = useState({ width: 380, height: 520 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
+  const [isMinimized, setIsMinimized] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const systemPrompt = useMemo(() => {
     const meetingDate = new Date(job.created_at).toLocaleString();
@@ -136,34 +147,176 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
     setUserInput('');
   };
 
+  // Mouse event handlers for dragging
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.target instanceof HTMLElement && e.target.classList.contains('resize-handle')) {
+      // Start resizing
+      e.preventDefault();
+      setIsResizing(true);
+      setResizeStart({
+        x: e.clientX,
+        y: e.clientY,
+        width: size.width,
+        height: size.height
+      });
+    } else if (e.target instanceof HTMLElement && e.target.closest('.drag-handle')) {
+      // Start dragging
+      e.preventDefault();
+      setIsDragging(true);
+      setDragStart({
+        x: e.clientX - position.x,
+        y: e.clientY - position.y
+      });
+    }
+  };
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (isDragging) {
+      const newX = e.clientX - dragStart.x;
+      const newY = e.clientY - dragStart.y;
+
+      // Constrain to viewport
+      const maxX = window.innerWidth - 100;
+      const maxY = window.innerHeight - 100;
+
+      setPosition({
+        x: Math.max(0, Math.min(newX, maxX)),
+        y: Math.max(0, Math.min(newY, maxY))
+      });
+    } else if (isResizing) {
+      const deltaX = e.clientX - resizeStart.x;
+      const deltaY = e.clientY - resizeStart.y;
+
+      const newWidth = Math.max(320, Math.min(800, resizeStart.width + deltaX));
+      const newHeight = Math.max(200, Math.min(window.innerHeight - 100, resizeStart.height + deltaY));
+
+      setSize({ width: newWidth, height: newHeight });
+    }
+  }, [isDragging, isResizing, dragStart, resizeStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+    setIsResizing(false);
+  }, []);
+
+  useEffect(() => {
+    if (isDragging || isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = isResizing ? 'nwse-resize' : 'move';
+
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+      };
+    }
+  }, [isDragging, isResizing, handleMouseMove, handleMouseUp]);
+
   return (
-    <div className="assistant-chat shadow-lg border rounded-4 bg-white" style={{
-      position: 'fixed',
-      bottom: '2rem',
-      right: '2rem',
-      width: '380px',
-      maxWidth: '90vw',
-      height: '520px',
-      display: 'flex',
-      flexDirection: 'column',
-      zIndex: 1050
-    }}>
-      <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom" style={{ borderTopLeftRadius: '1rem', borderTopRightRadius: '1rem' }}>
-        <div>
-          <strong>Meeting Assistant Copilot</strong>
-          <div className="text-muted" style={{ fontSize: '0.8rem' }}>{job.filename}</div>
+    <>
+      <style>
+        {`
+          .assistant-chat {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          }
+          .assistant-chat.dragging {
+            opacity: 0.9;
+            transform: scale(1.02);
+          }
+          .assistant-chat.resizing {
+            opacity: 0.95;
+          }
+          .drag-handle {
+            user-select: none;
+          }
+          .resize-handle:hover {
+            opacity: 1 !important;
+            background: linear-gradient(135deg, transparent 40%, #6c757d 40%) !important;
+          }
+          .assistant-chat .btn-sm {
+            font-weight: 400;
+          }
+          .assistant-chat .form-control-sm {
+            border-radius: 0.5rem;
+          }
+          .assistant-chat::-webkit-scrollbar {
+            width: 6px;
+          }
+          .assistant-chat::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+          }
+          .assistant-chat::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+          }
+          .assistant-chat::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+          }
+        `}
+      </style>
+      <div
+        ref={containerRef}
+        className={`assistant-chat shadow-lg border rounded-4 bg-white ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''}`}
+        style={{
+          position: 'fixed',
+          left: `${position.x}px`,
+          top: `${position.y}px`,
+          width: `${size.width}px`,
+          height: isMinimized ? '48px' : `${size.height}px`,
+          display: 'flex',
+          flexDirection: 'column',
+          zIndex: 1050,
+          transition: isDragging || isResizing ? 'none' : 'all 0.2s ease',
+          resize: 'none',
+          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.3)',
+          border: '1px solid rgba(0, 0, 0, 0.1)'
+        }}
+        onMouseDown={handleMouseDown}
+      >
+      {/* Header */}
+      <div className="drag-handle d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-primary text-white"
+           style={{ borderTopLeftRadius: '1rem', borderTopRightRadius: '1rem', cursor: 'move' }}>
+        <div className="d-flex align-items-center gap-2">
+          <i className="bi bi-robot"></i>
+          <div>
+            <strong style={{ fontSize: '0.9rem' }}>AI Assistant</strong>
+            <div className="text-white-50" style={{ fontSize: '0.75rem' }}>{job.filename}</div>
+          </div>
         </div>
-        <div className="d-flex gap-2">
-          <button className="btn btn-sm btn-outline-secondary" onClick={handleReset} disabled={isSending}>
-            Reset
+        <div className="d-flex gap-1">
+          <button
+            className="btn btn-sm btn-outline-light border-0 p-1"
+            onClick={() => setIsMinimized(!isMinimized)}
+            style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
+            title={isMinimized ? "Expand" : "Minimize"}
+          >
+            <i className={`bi bi-${isMinimized ? 'caret-down-fill' : 'caret-up-fill'}`}></i>
           </button>
-          <button className="btn btn-sm btn-outline-danger" onClick={onClose}>
-            Close
+          <button
+            className="btn btn-sm btn-outline-light border-0 p-1"
+            onClick={handleReset}
+            disabled={isSending}
+            style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
+            title="Reset"
+          >
+            <i className="bi bi-arrow-clockwise"></i>
+          </button>
+          <button
+            className="btn btn-sm btn-outline-light border-0 p-1"
+            onClick={onClose}
+            style={{ fontSize: '0.8rem', minWidth: '24px', height: '24px' }}
+            title="Close"
+          >
+            <i className="bi bi-x-lg"></i>
           </button>
         </div>
       </div>
 
-      {showQuickPrompts && (
+      {!isMinimized && showQuickPrompts && (
         <div className="px-3 py-2 border-bottom" style={{ backgroundColor: '#f8f9fa' }}>
           <div className="d-flex justify-content-between align-items-center mb-2">
             <small className="text-muted">Quick Questions</small>
@@ -171,11 +324,12 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
               type="button"
               className="btn btn-sm btn-outline-secondary"
               onClick={() => setShowQuickPrompts(false)}
+              style={{ fontSize: '0.75rem', padding: '2px 6px' }}
             >
               Hide
             </button>
           </div>
-          <div className="d-flex gap-2 flex-wrap">
+          <div className="d-flex gap-1 flex-wrap">
             {QUICK_PROMPTS.map(prompt => (
               <button
                 key={prompt}
@@ -183,84 +337,125 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
                 className="btn btn-sm btn-outline-primary"
                 onClick={() => handleQuickPrompt(prompt)}
                 disabled={isSending}
+                style={{ fontSize: '0.75rem', padding: '3px 6px' }}
               >
-                {prompt}
+                {prompt.length > 20 ? prompt.substring(0, 20) + '...' : prompt}
               </button>
             ))}
           </div>
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-grow-1 px-3 py-3" style={{ overflowY: 'auto', fontSize: '0.9rem', backgroundColor: '#fff' }}>
-        {messages.map(message => (
-          <div key={message.id} className={`d-flex mb-3 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
-            <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'}`} style={{ maxWidth: '85%' }}>
-              {message.role === 'assistant' ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-              ) : (
-                message.content.split('\n').map((line, idx) => (
-                  <span key={idx}>
-                    {line}
-                    {idx !== message.content.split('\n').length - 1 && <br />}
-                  </span>
-                ))
-              )}
+      {!isMinimized && (
+        <div ref={scrollRef} className="flex-grow-1 px-3 py-2" style={{ overflowY: 'auto', fontSize: '0.85rem', backgroundColor: '#fff' }}>
+          {messages.map(message => (
+            <div key={message.id} className={`d-flex mb-2 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
+              <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'}`} style={{ maxWidth: '90%' }}>
+                {message.role === 'assistant' ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                ) : (
+                  message.content.split('\n').map((line, idx) => (
+                    <span key={idx}>
+                      {line}
+                      {idx !== message.content.split('\n').length - 1 && <br />}
+                    </span>
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-        {isSending && (
-          <div className="d-flex mb-2 justify-content-start">
-            <div className="p-2 rounded-3 bg-light border" style={{ maxWidth: '85%' }}>
-              <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-              Thinking...
+          ))}
+          {isSending && (
+            <div className="d-flex mb-2 justify-content-start">
+              <div className="p-2 rounded-3 bg-light border" style={{ maxWidth: '90%' }}>
+                <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                Thinking...
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
-      {error && (
-        <div className="alert alert-warning mx-3 my-2 py-2" style={{ fontSize: '0.85rem' }}>
+      {!isMinimized && error && (
+        <div className="alert alert-warning mx-3 my-1 py-2" style={{ fontSize: '0.8rem' }}>
           {error}
         </div>
       )}
 
-      <form onSubmit={handleSend} className="p-3 border-top" style={{ borderBottomLeftRadius: '1rem', borderBottomRightRadius: '1rem' }}>
-        <div className="form-floating">
-          <textarea
-            id="assistant-chat-input"
-            className="form-control"
-            placeholder="Ask the assistant..."
-            style={{ minHeight: '80px', resize: 'none' }}
-            value={userInput}
-            onChange={event => setUserInput(event.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isSending}
-          />
-          <label htmlFor="assistant-chat-input">Ask the assistant...</label>
-        </div>
-        <div className="d-flex justify-content-between align-items-center mt-2">
-          <small className="text-muted">Press Enter to send, Shift+Enter for new line</small>
-          {!showQuickPrompts && (
-            <button
-              type="button"
-              className="btn btn-sm btn-outline-secondary me-auto"
-              onClick={() => setShowQuickPrompts(true)}
-            >
-              Show Quick Questions
-            </button>
-          )}
-          <button type="submit" className="btn btn-primary" disabled={isSending || !userInput.trim()}>
-            {isSending ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                Sending
-              </>
-            ) : (
-              'Send'
-            )}
-          </button>
-        </div>
-      </form>
-    </div>
+      {!isMinimized && (
+        <form onSubmit={handleSend} className="p-2 border-top" style={{ borderBottomLeftRadius: '1rem', borderBottomRightRadius: '1rem' }}>
+          <div className="d-flex gap-2 align-items-end">
+            <div className="flex-grow-1">
+              <textarea
+                id="assistant-chat-input"
+                className="form-control form-control-sm"
+                placeholder="Ask anything..."
+                style={{ minHeight: '36px', maxHeight: '80px', resize: 'none', fontSize: '0.85rem' }}
+                value={userInput}
+                onChange={event => setUserInput(event.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isSending}
+              />
+            </div>
+            <div className="d-flex gap-1">
+              {!showQuickPrompts && (
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary btn-sm"
+                  onClick={() => setShowQuickPrompts(true)}
+                  style={{ fontSize: '0.8rem', padding: '6px 8px' }}
+                  title="Show Quick Questions"
+                >
+                  <i className="bi bi-lightning"></i>
+                </button>
+              )}
+              <button type="submit" className="btn btn-primary btn-sm" disabled={isSending || !userInput.trim()} style={{ fontSize: '0.8rem', padding: '6px 12px' }}>
+                {isSending ? (
+                  <span className="spinner-border spinner-border-sm" role="status"></span>
+                ) : (
+                  <i className="bi bi-send"></i>
+                )}
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {/* Resize Handle */}
+      {!isMinimized && (
+        <div
+          className="resize-handle"
+          style={{
+            position: 'absolute',
+            bottom: '0',
+            right: '0',
+            width: '16px',
+            height: '16px',
+            cursor: 'nwse-resize',
+            borderBottomRightRadius: '1rem',
+            background: 'linear-gradient(135deg, transparent 50%, #adb5bd 50%)',
+            opacity: 0.6,
+            transition: 'opacity 0.2s'
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsResizing(true);
+            setResizeStart({
+              x: e.clientX,
+              y: e.clientY,
+              width: size.width,
+              height: size.height
+            });
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.opacity = '1';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.opacity = '0.6';
+          }}
+        />
+      )}
+      </div>
+    </>
   );
 };
