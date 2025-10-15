@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { apiClient } from '../api';
 
 interface SummaryData {
   formatted_content: string;
@@ -32,6 +33,7 @@ interface SummaryData {
 
 interface SummaryWithReferencesProps {
   summary: string | null;
+  jobId: number;
   transcriptSegments: Array<{
     index: number;
     speaker: string;
@@ -40,15 +42,20 @@ interface SummaryWithReferencesProps {
     end_time: number;
   }>;
   onSegmentClick?: (segmentIndex: number | number[]) => void;
+  onSummaryUpdate?: (updatedSummary: string) => void;
 }
 
 export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   summary,
+  jobId,
   transcriptSegments,
-  onSegmentClick
+  onSegmentClick,
+  onSummaryUpdate
 }) => {
   const [, setSummaryData] = useState<SummaryData | null>(null);
   const [editedContent, setEditedContent] = useState('');
+  const [originalContent, setOriginalContent] = useState('');
+  const [hasChanges, setHasChanges] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
@@ -91,10 +98,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
             .trim();
 
           setEditedContent(processedContent);
+          setOriginalContent(processedContent);
         } else {
           // Fallback: if no formatted content, create a simple message
           const fallbackContent = 'No formatted summary available. Please generate a new summary.';
           setEditedContent(fallbackContent);
+          setOriginalContent(fallbackContent);
         }
       } catch (error) {
         console.error('Error parsing summary:', error);
@@ -104,6 +113,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           structured_data: {}
         });
         setEditedContent(summary);
+        setOriginalContent(summary);
       }
     }
   }, [summary]);
@@ -189,6 +199,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const handleEditorBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     const content = e.currentTarget.innerText || '';
     setEditedContent(content);
+    setHasChanges(content !== originalContent);
     // Don't re-render the editor content on blur to preserve user edits
   };
 
@@ -207,6 +218,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       if (wysiwygEditor) {
         const content = wysiwygEditor.innerText || '';
         setEditedContent(content);
+        setHasChanges(content !== originalContent);
       }
     }
   };
@@ -219,7 +231,38 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
   };
 
-  
+  // Save summary function
+  const saveSummary = async () => {
+    try {
+      // Convert markdown content back to the original format expected by the backend
+      const updatedSummaryData = {
+        ...JSON.parse(summary || '{}'),
+        formatted_content: editedContent
+      };
+
+      const requestPayload = {
+        summary: JSON.stringify(updatedSummaryData)
+      };
+
+      await apiClient.post(`/jobs/${jobId}/update_summary`, requestPayload, {
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (onSummaryUpdate) {
+        onSummaryUpdate(JSON.stringify(updatedSummaryData));
+      }
+
+      setOriginalContent(editedContent);
+      setHasChanges(false);
+
+      return true;
+    } catch (error) {
+      console.error('Error saving summary:', error);
+      return false;
+    }
+  };
+
+
   
   if (!summary) {
     return (
@@ -332,31 +375,74 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
                   `}
                 </style>
                 <div className="editor-toolbar">
-                  <div className="d-flex align-items-center gap-2">
-                    <button className="toolbar-btn" onClick={() => insertFormatting('**', '**')} title="Bold">
-                      <i className="bi bi-type-bold"></i>
-                    </button>
-                    <button className="toolbar-btn" onClick={() => insertFormatting('*', '*')} title="Italic">
-                      <i className="bi bi-type-italic"></i>
-                    </button>
-                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                    <button className="toolbar-btn" onClick={() => insertFormatting('## ', '')} title="Heading 2">
-                      H2
-                    </button>
-                    <button className="toolbar-btn" onClick={() => insertFormatting('### ', '')} title="Heading 3">
-                      H3
-                    </button>
-                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                    <button className="toolbar-btn" onClick={() => insertFormatting('- ', '')} title="Bullet List">
-                      <i className="bi bi-list-ul"></i>
-                    </button>
-                    <button className="toolbar-btn" onClick={() => insertFormatting('1. ', '')} title="Numbered List">
-                      <i className="bi bi-list-ol"></i>
-                    </button>
-                    <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
-                    <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference">
-                      <i className="bi bi-link-45deg"></i> Ref
-                    </button>
+                  <div className="d-flex align-items-center justify-content-between">
+                    <div className="d-flex align-items-center gap-2">
+                      <button className="toolbar-btn" onClick={() => insertFormatting('**', '**')} title="Bold">
+                        <i className="bi bi-type-bold"></i>
+                      </button>
+                      <button className="toolbar-btn" onClick={() => insertFormatting('*', '*')} title="Italic">
+                        <i className="bi bi-type-italic"></i>
+                      </button>
+                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                      <button className="toolbar-btn" onClick={() => insertFormatting('## ', '')} title="Heading 2">
+                        H2
+                      </button>
+                      <button className="toolbar-btn" onClick={() => insertFormatting('### ', '')} title="Heading 3">
+                        H3
+                      </button>
+                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                      <button className="toolbar-btn" onClick={() => insertFormatting('- ', '')} title="Bullet List">
+                        <i className="bi bi-list-ul"></i>
+                      </button>
+                      <button className="toolbar-btn" onClick={() => insertFormatting('1. ', '')} title="Numbered List">
+                        <i className="bi bi-list-ol"></i>
+                      </button>
+                      <div className="border-start" style={{height: '20px', margin: '0 0.5rem'}}></div>
+                      <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference">
+                        <i className="bi bi-link-45deg"></i> Ref
+                      </button>
+                    </div>
+                    <div className="d-flex align-items-center gap-2">
+                      <button
+                        className={`btn btn-sm ${hasChanges ? 'btn-outline-success' : 'btn-outline-secondary'}`}
+                        onClick={async (event) => {
+                          if (!hasChanges) return;
+
+                          const button = event.currentTarget as HTMLButtonElement;
+                          const originalText = button.innerHTML;
+                          button.innerHTML = '<span className="spinner-border spinner-border-sm me-1"></span>Saving...';
+                          button.disabled = true;
+
+                          const success = await saveSummary();
+
+                          if (success) {
+                            button.innerHTML = '<i className="bi bi-check-circle me-1"></i> Saved!';
+                            button.classList.remove('btn-outline-success');
+                            button.classList.add('btn-success');
+                            setTimeout(() => {
+                              button.innerHTML = originalText;
+                              button.classList.remove('btn-success');
+                              button.classList.add('btn-outline-success');
+                              button.disabled = false;
+                            }, 2000);
+                          } else {
+                            button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
+                            button.classList.remove('btn-outline-success');
+                            button.classList.add('btn-danger');
+                            setTimeout(() => {
+                              button.innerHTML = originalText;
+                              button.classList.remove('btn-danger');
+                              button.classList.add('btn-outline-success');
+                              button.disabled = false;
+                            }, 2000);
+                          }
+                        }}
+                        disabled={!hasChanges}
+                        title="Save summary changes"
+                      >
+                        <i className="bi bi-save me-1"></i> Save
+                      </button>
+                    </div>
                   </div>
                 </div>
                 <div

@@ -111,10 +111,10 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       }
       return segment;
     });
-    
+
     setSegments(updatedSegments);
+    setHasChanges(true);
     setEditingSpeakerForSegment(null);
-    saveTranscript(updatedSegments);
   };
 
   const handleSegmentSpeakerChange = (segmentIds: number[], newName: string) => {
@@ -126,9 +126,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       }
       return segment;
     });
-    
+
     setSegments(updatedSegments);
-    saveTranscript(updatedSegments);
+    setHasChanges(true);
   };
 
   const handleDeleteSegment = (segmentIds: number[]) => {
@@ -145,7 +145,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
 
     setSegments(updatedSegments);
-    saveTranscript(updatedSegments);
+    setHasChanges(true);
   };
 
   const handleMergeSegment = (segmentId: number) => {
@@ -170,7 +170,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     ];
 
     setSegments(updatedSegments);
-    saveTranscript(updatedSegments);
+    setHasChanges(true);
   };
 
   const handleSplitSegment = (segmentId: number) => {
@@ -251,7 +251,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     console.log('Updated segments:', updatedSegments);
 
     setSegments(updatedSegments);
-    saveTranscript(updatedSegments);
+    setHasChanges(true);
   };
 
   const handleEditClick = (group: TranscriptSegment & { originalSegments: TranscriptSegment[] }) => {
@@ -488,6 +488,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               transform: translateX(0) scale(1);
             }
           }
+          .dropdown-menu {
+            z-index: 9999 !important;
+          }
         `}
       </style>
       <div className="d-flex align-items-center justify-content-between mb-2 px-3" style={{minHeight: '32px'}}>
@@ -525,12 +528,37 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         <div className="d-flex align-items-center gap-1">
           <button
             className="btn btn-sm btn-outline-success"
-            onClick={() => {
+            onClick={async (event) => {
               // Save current changes to backend and update original
-              saveTranscript(segments).then(() => {
+              try {
+                await saveTranscript(segments);
                 setOriginalTranscript([...segments]);
                 setHasChanges(false);
-              });
+                // Show success feedback
+                const button = event.currentTarget as HTMLButtonElement;
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i className="bi bi-check-circle me-1"></i> Saved!';
+                button.classList.remove('btn-outline-success');
+                button.classList.add('btn-success');
+                setTimeout(() => {
+                  button.innerHTML = originalText;
+                  button.classList.remove('btn-success');
+                  button.classList.add('btn-outline-success');
+                }, 2000);
+              } catch (error) {
+                console.error('Failed to save transcript:', error);
+                // Show error feedback
+                const button = event.currentTarget as HTMLButtonElement;
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
+                button.classList.remove('btn-outline-success');
+                button.classList.add('btn-danger');
+                setTimeout(() => {
+                  button.innerHTML = originalText;
+                  button.classList.remove('btn-danger');
+                  button.classList.add('btn-outline-success');
+                }, 2000);
+              }
             }}
             disabled={!hasChanges}
             title="Save current changes"
@@ -687,7 +715,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       >
                         {group.speaker}
                       </button>
-                      <ul className="dropdown-menu">
+                      <ul className="dropdown-menu" style={{zIndex: '9999'}}>
                         {uniqueSpeakers.map(speaker => (
                           <li key={speaker}>
                             <button
@@ -804,7 +832,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
 
                     setSegments(updatedSegments);
                     setHasChanges(true);
-                    saveTranscript(updatedSegments);
                     setEditingSegmentId(null);
                   }
                 }}

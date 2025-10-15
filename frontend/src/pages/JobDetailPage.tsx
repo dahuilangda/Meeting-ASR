@@ -272,8 +272,13 @@ export function JobDetailPage() {
                         <div className="card-body p-0" style={{ maxHeight: '75vh', overflowY: 'auto' }}>
                             <SummaryWithReferences
                                 summary={job?.summary}
+                                jobId={job.id}
                                 transcriptSegments={transcriptSegments}
                                 onSegmentClick={handleSegmentReference}
+                                onSummaryUpdate={(updatedSummary) => {
+                                    // Update the job state with the new summary
+                                    setJob({...job, summary: updatedSummary});
+                                }}
                             />
                         </div>
                     </div>
