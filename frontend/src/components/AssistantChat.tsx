@@ -35,7 +35,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
   const [messages, setMessages] = useState<ConversationMessage[]>([{
     id: 'welcome',
     role: 'assistant',
-    content: '你好，我是你的会议智能助手。可以向我提问会议内容、总结重点或生成行动项！'
+    content: 'Hello! I am your AI meeting assistant. You can ask me questions about the meeting content, summarize key points, or generate action items!'
   }]);
   const [userInput, setUserInput] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -103,12 +103,12 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
       });
     } catch (err) {
       console.error('Assistant chat failed', err);
-      const friendlyError = err instanceof Error ? err.message : '无法获取助理回复，请稍后重试。';
+      const friendlyError = err instanceof Error ? err.message : 'Unable to get assistant response, please try again later.';
       setError(friendlyError);
       appendMessage({
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        content: '抱歉，我暂时无法处理这个请求。请稍后再试一次。'
+        content: 'Sorry, I am currently unable to process this request. Please try again later.'
       });
     } finally {
       setIsSending(false);
@@ -130,7 +130,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
     setMessages([{
       id: 'welcome',
       role: 'assistant',
-      content: '会话已重置。请告诉我你想了解的会议内容。'
+      content: 'Conversation has been reset. Please tell me what you would like to know about the meeting.'
     }]);
     setError(null);
     setUserInput('');
@@ -150,15 +150,15 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
     }}>
       <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom" style={{ borderTopLeftRadius: '1rem', borderTopRightRadius: '1rem' }}>
         <div>
-          <strong>会议助理 Copilot</strong>
+          <strong>Meeting Assistant Copilot</strong>
           <div className="text-muted" style={{ fontSize: '0.8rem' }}>{job.filename}</div>
         </div>
         <div className="d-flex gap-2">
           <button className="btn btn-sm btn-outline-secondary" onClick={handleReset} disabled={isSending}>
-            重置
+            Reset
           </button>
           <button className="btn btn-sm btn-outline-danger" onClick={onClose}>
-            关闭
+            Close
           </button>
         </div>
       </div>
@@ -166,13 +166,13 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
       {showQuickPrompts && (
         <div className="px-3 py-2 border-bottom" style={{ backgroundColor: '#f8f9fa' }}>
           <div className="d-flex justify-content-between align-items-center mb-2">
-            <small className="text-muted">快捷提问</small>
+            <small className="text-muted">Quick Questions</small>
             <button
               type="button"
               className="btn btn-sm btn-outline-secondary"
               onClick={() => setShowQuickPrompts(false)}
             >
-              隐藏
+              Hide
             </button>
           </div>
           <div className="d-flex gap-2 flex-wrap">
@@ -212,7 +212,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
           <div className="d-flex mb-2 justify-content-start">
             <div className="p-2 rounded-3 bg-light border" style={{ maxWidth: '85%' }}>
               <span className="spinner-border spinner-border-sm me-2" role="status"></span>
-              正在思考...
+              Thinking...
             </div>
           </div>
         )}
@@ -229,34 +229,34 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
           <textarea
             id="assistant-chat-input"
             className="form-control"
-            placeholder="向助理提问..."
+            placeholder="Ask the assistant..."
             style={{ minHeight: '80px', resize: 'none' }}
             value={userInput}
             onChange={event => setUserInput(event.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isSending}
           />
-          <label htmlFor="assistant-chat-input">向助理提问...</label>
+          <label htmlFor="assistant-chat-input">Ask the assistant...</label>
         </div>
         <div className="d-flex justify-content-between align-items-center mt-2">
-          <small className="text-muted">按 Enter 发送，Shift+Enter 换行</small>
+          <small className="text-muted">Press Enter to send, Shift+Enter for new line</small>
           {!showQuickPrompts && (
             <button
               type="button"
               className="btn btn-sm btn-outline-secondary me-auto"
               onClick={() => setShowQuickPrompts(true)}
             >
-              显示快捷提问
+              Show Quick Questions
             </button>
           )}
           <button type="submit" className="btn btn-primary" disabled={isSending || !userInput.trim()}>
             {isSending ? (
               <>
                 <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                发送中
+                Sending
               </>
             ) : (
-              '发送'
+              'Send'
             )}
           </button>
         </div>

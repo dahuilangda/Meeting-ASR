@@ -14,14 +14,15 @@ interface TranscriptEditorProps {
   jobId: number;
   initialTranscript: string | null;
   onTranscriptUpdate: (updatedTranscript: string) => void;
+  highlightedSegments?: number[];
 }
 
 export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   jobId,
   initialTranscript,
-  onTranscriptUpdate
+  onTranscriptUpdate,
+  highlightedSegments = []
 }) => {
-  const [transcript, setTranscript] = useState<string | null>(initialTranscript);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -32,7 +33,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
-  // Removed unused state variables: translatedSegments, isTranslating
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   const formatTime = (seconds: number): string => {
@@ -398,37 +398,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     });
   };
 
-  // Function to refresh transcript segments with latest timing data
-  const refreshTranscriptSegments = async () => {
-    try {
-      const response = await apiClient.get(`/jobs/${jobId}`);
-      const jobDetails: any = response.data;
-
-      if (jobDetails.timing_info) {
-        try {
-          const timingData = JSON.parse(jobDetails.timing_info);
-          console.log("Refreshing with timing data:", timingData); // Debug log
-          const refreshedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
-            id: index,
-            text: item.text || '',
-            startTime: parseFloat(item.start_time) || 0,
-            endTime: parseFloat(item.end_time) || 0,
-            speaker: item.speaker || 'Unknown',
-            doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
-          }));
-
-          console.log("Refreshed segments:", refreshedSegments); // Debug log
-          setSegments(refreshedSegments);
-          setOriginalTranscript(refreshedSegments);
-        } catch (error) {
-          console.error("Error refreshing timing info:", error);
-        }
-      }
-    } catch (error) {
-      console.error("Error refreshing transcript:", error);
-    }
-  };
-
+  
   const editorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -488,38 +458,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     setAudioError("Audio file could not be loaded. Either the file is unavailable or there was a connection issue.");
   };
 
-  const handleOptimizeAll = async () => {
-    try {
-      await apiClient.post(`/jobs/${jobId}/optimize`);
-      // Refresh the job details to get the optimized transcript
-      const response = await apiClient.get(`/jobs/${jobId}`);
-      const jobDetails: any = response.data;
-      // Update the segments with the optimized transcript
-      if (jobDetails.transcript && jobDetails.timing_info) {
-        try {
-          const timingData = JSON.parse(jobDetails.timing_info);
-          const parsedSegments: TranscriptSegment[] = timingData.map((item: any, index: number) => ({
-            id: index,
-            text: item.text,
-            startTime: item.start_time,
-            endTime: item.end_time,
-            speaker: item.speaker,
-            doNotMergeWithPrevious: Boolean(item.do_not_merge_with_previous)
-          }));
-          setSegments(parsedSegments);
-        } catch (error) {
-          console.error("Error parsing timing info:", error);
-          // Fallback to parsing transcript text if timing info is invalid
-          setSegments(parseTranscriptFallback(jobDetails.transcript || ''));
-        }
-      }
-      alert('Transcript optimized successfully!');
-    } catch (error) {
-      console.error('Error optimizing transcript:', error);
-      alert('Failed to optimize transcript. Please try again.');
-    }
-  };
-
+  
   return (
     <div className="transcript-editor" ref={editorRef}>
       <div className="d-flex align-items-center justify-content-between mb-2">
@@ -591,7 +530,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         </div>
       )}
 
-      <div className="transcript-container" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+      <div className="transcript-container" style={{ height: 'calc(75vh - 80px)', overflowY: 'auto', padding: '1rem' }}>
         {groupedSegments.map((group, index) => {
           const getSpeakerColor = (speaker: string) => {
             const colors = [
@@ -626,20 +565,36 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           const isCurrentlyPlaying = currentSpeakerPlaying === group.id;
           const isEditing = editingSegmentId === group.id;
 
+          // Check if this segment should be highlighted based on references
+          const isHighlighted = highlightedSegments.some(refIndex => {
+            const segmentIds = group.originalSegments.map(s => s.id);
+            return segmentIds.includes(refIndex - 1); // Convert 1-based index to 0-based
+          });
+
           return (
             <div
               key={group.id}
-              className={`transcript-segment p-2 mb-2 rounded border ${isEditing ? 'border-primary' : ''}`}
+              className={`transcript-segment p-2 mb-2 rounded border ${isEditing ? 'border-primary' : ''} ${isHighlighted ? 'highlighted-segment' : ''}`}
               style={{
                 fontSize: '0.9rem',
-                backgroundColor: bgColor,
-                borderColor: isEditing ? '#007bff' : borderColor,
-                borderLeftWidth: '3px',
-                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : 'none'
+                backgroundColor: isHighlighted ? '#e8f5e8' : bgColor,
+                borderColor: isHighlighted ? '#28a745' : (isEditing ? '#007bff' : borderColor),
+                borderLeftWidth: isHighlighted ? '4px' : '3px',
+                borderLeftColor: isHighlighted ? '#28a745' : borderColor,
+                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : (isHighlighted ? '0 2px 8px rgba(40,167,69,0.2)' : 'none'),
+                transform: isHighlighted ? 'translateX(2px)' : 'translateX(0)',
+                transition: 'all 0.2s ease'
               }}
             >
-              <div className="segment-header d-flex justify-content-between align-items-center mb-1">
-                <div className="d-flex align-items-center gap-2">
+              <div className="segment-header d-flex justify-content-between align-items-center mb-2">
+                <div className="d-flex align-items-center gap-2 flex-grow-1">
+                  <span className="badge bg-primary me-2" style={{
+                    fontSize: '0.75rem',
+                    minWidth: '30px',
+                    textAlign: 'center'
+                  }}>
+                    {index + 1}
+                  </span>
                   {editingSpeakerForSegment === group.id ? (
                     <div className="d-flex align-items-center">
                       <input
@@ -717,53 +672,52 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       </ul>
                     </div>
                   )}
+                </div>
+                <div className="d-flex align-items-center gap-2">
                   <small className="text-muted" style={{ fontSize: '0.7rem' }}>
                     {formatTime(group.startTime)} - {formatTime(group.endTime)}
                   </small>
-                  <span className="badge bg-secondary ms-1" style={{ fontSize: '0.65rem' }}>
-                    {index + 1}
-                  </span>
-                </div>
-                <div className='d-flex align-items-center gap-1'>
-                  <button
-                    className="btn btn-sm btn-outline-primary py-0"
-                    onClick={() => handleSplitSegment(group.id)}
-                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
-                    title="Split segment"
-                  >
-                    <i className="bi bi-scissors"></i>
-                  </button>
-                  <button
-                    className="btn btn-sm btn-outline-danger py-0"
-                    onClick={() => handleDeleteSegment(group.originalSegments.map(s => s.id))}
-                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
-                    title="Delete segment"
-                  >
-                    <i className="bi bi-trash"></i>
-                  </button>
-                  <button
-                    className="btn btn-sm btn-outline-secondary py-0"
-                    onClick={() => handleMergeSegment(group.id)}
-                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
-                    title="Merge with next"
-                  >
-                    <i className="bi bi-link"></i>
-                  </button>
-                  <button
-                    className={`btn btn-sm py-0 ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
-                    onClick={() => isCurrentlyPlaying ? handleSpeakerPause() : handleSpeakerPlay(group.startTime, group.id)}
-                    title={isCurrentlyPlaying ? 'Stop playback' : 'Play this section'}
-                    disabled={isAudioLoading || !!audioError}
-                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
-                  >
-                    {isCurrentlyPlaying ? (
-                      <i className="bi bi-stop-fill"></i>
-                    ) : isAudioLoading ? (
-                      <span className="spinner-border spinner-border-sm" role="status"></span>
-                    ) : (
-                      <i className="bi bi-play-fill"></i>
-                    )}
-                  </button>
+                  <div className='d-flex align-items-center gap-1'>
+                    <button
+                      className="btn btn-sm btn-outline-primary py-0"
+                      onClick={() => handleSplitSegment(group.id)}
+                      style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                      title="Split segment"
+                    >
+                      <i className="bi bi-scissors"></i>
+                    </button>
+                    <button
+                      className="btn btn-sm btn-outline-danger py-0"
+                      onClick={() => handleDeleteSegment(group.originalSegments.map(s => s.id))}
+                      style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                      title="Delete segment"
+                    >
+                      <i className="bi bi-trash"></i>
+                    </button>
+                    <button
+                      className="btn btn-sm btn-outline-secondary py-0"
+                      onClick={() => handleMergeSegment(group.id)}
+                      style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                      title="Merge with next"
+                    >
+                      <i className="bi bi-link"></i>
+                    </button>
+                    <button
+                      className={`btn btn-sm py-0 ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
+                      onClick={() => isCurrentlyPlaying ? handleSpeakerPause() : handleSpeakerPlay(group.startTime, group.id)}
+                      title={isCurrentlyPlaying ? 'Stop playback' : 'Play this section'}
+                      disabled={isAudioLoading || !!audioError}
+                      style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    >
+                      {isCurrentlyPlaying ? (
+                        <i className="bi bi-stop-fill"></i>
+                      ) : isAudioLoading ? (
+                        <span className="spinner-border spinner-border-sm" role="status"></span>
+                      ) : (
+                        <i className="bi bi-play-fill"></i>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div

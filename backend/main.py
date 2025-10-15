@@ -5,6 +5,7 @@ from typing import List
 import shutil
 import os
 import json
+import re
 from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -675,84 +676,216 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
                 print(f"Error initializing OpenAI client: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
         
-        # Parse transcript with timing information for better reference mapping
-        transcript_segments = []
+        # Parse transcript with timing information and group consecutive segments by same speaker
+        original_segments = []
         if job.timing_info:
             try:
                 timing_data = json.loads(job.timing_info)
                 for idx, segment in enumerate(timing_data):
-                    transcript_segments.append({
-                        'index': idx + 1,
-                        'speaker': segment.get('speaker', 'Unknown'),
-                        'text': segment.get('text', ''),
-                        'start_time': segment.get('start_time', 0),
-                        'end_time': segment.get('end_time', 0)
-                    })
+                    text = segment.get('text', '').strip()
+                    if text:  # Only include segments with actual text content
+                        original_segments.append({
+                            'index': idx + 1,
+                            'speaker': segment.get('speaker', 'Unknown'),
+                            'text': text,
+                            'start_time': segment.get('start_time', 0),
+                            'end_time': segment.get('end_time', 0),
+                            'do_not_merge_with_previous': bool(segment.get('do_not_merge_with_previous', False))
+                        })
             except Exception as e:
                 print(f"Error parsing timing info for summary: {e}")
 
-        # Create prompt with segment references
+        # Fallback: if no timing info or no valid segments, try to parse from plain transcript
+        if not original_segments and job.transcript:
+            print(f"[Job {job_id}] No valid segments from timing info, parsing plain transcript")
+            lines = job.transcript.split('\n')
+            for idx, line in enumerate(lines):
+                line = line.strip()
+                if line:  # Skip empty lines
+                    # Try to extract speaker and content
+                    match = re.match(r'^\[([^\]]+)\]\s*(.+)$', line)
+                    if match and match.group(2).strip():
+                        original_segments.append({
+                            'index': len(original_segments) + 1,
+                            'speaker': match.group(1),
+                            'text': match.group(2).strip(),
+                            'start_time': 0,
+                            'end_time': 0,
+                            'do_not_merge_with_previous': False
+                        })
+
+        if not original_segments:
+            print(f"[Job {job_id}] No valid transcript segments found for summary generation")
+            raise HTTPException(status_code=400, detail="No valid transcript content found for summary generation")
+
+        # Group consecutive segments by the same speaker (same logic as frontend)
+        grouped_segments = []
+        for segment in original_segments:
+            if not grouped_segments:
+                grouped_segments.append({
+                    'index': 1,
+                    'speaker': segment['speaker'],
+                    'text': segment['text'],
+                    'start_time': segment['start_time'],
+                    'end_time': segment['end_time'],
+                    'original_segments': [segment]
+                })
+            else:
+                last_group = grouped_segments[-1]
+                if (last_group['speaker'] == segment['speaker'] and
+                    not segment.get('do_not_merge_with_previous', False)):
+                    # Same speaker as previous, merge the segments
+                    last_group['text'] += ' ' + segment['text']
+                    last_group['end_time'] = segment['end_time']
+                    last_group['original_segments'].append(segment)
+                else:
+                    # Different speaker, create a new group
+                    grouped_segments.append({
+                        'index': len(grouped_segments) + 1,
+                        'speaker': segment['speaker'],
+                        'text': segment['text'],
+                        'start_time': segment['start_time'],
+                        'end_time': segment['end_time'],
+                        'original_segments': [segment]
+                    })
+
+        transcript_segments = grouped_segments
+        print(f"[Job {job_id}] Found {len(original_segments)} original segments, grouped into {len(transcript_segments)} display segments for summary")
+
+        # Create prompt with clear segment references (using merged segment numbers)
         transcript_with_refs = ""
         for segment in transcript_segments:
             start_formatted = f"{int(segment['start_time']//3600):02d}:{int((segment['start_time']%3600)//60):02d}:{int(segment['start_time']%60):02d}"
             end_formatted = f"{int(segment['end_time']//3600):02d}:{int((segment['end_time']%3600)//60):02d}:{int(segment['end_time']%60):02d}"
-            transcript_with_refs += f"[{segment['index']}] [{start_formatted}-{end_formatted}] [{segment['speaker']}] {segment['text']}\n"
+            transcript_with_refs += f"SEGMENT [{segment['index']}] [{start_formatted}-{end_formatted}] [{segment['speaker']}] {segment['text']}\n"
 
-        # Improved prompt for professional meeting summary with references
-        system_prompt = f"""You are an expert meeting assistant. Please create a professional, structured summary of the following meeting transcript in {target_language}.
+        # Add segment count and validation info
+        transcript_with_refs = f"TRANSCRIPT CONTAINS {len(transcript_segments)} MERGED SEGMENTS NUMBERED [1] THROUGH [{len(transcript_segments)}]\n" + "="*80 + "\n" + transcript_with_refs
 
-The transcript has been numbered with segment references [1], [2], [3], etc. You must reference these segment numbers in your summary to help users locate the original content.
+        print(f"[Job {job_id}] Generated transcript with {len(transcript_segments)} merged segments for summary")
+        print(f"[Job {job_id}] Available segment numbers: 1 to {len(transcript_segments)}")
+        print(f"[Job {job_id}] Sample transcript for summary: {transcript_with_refs[:500]}...")  # Debug log
 
-Your response should be a JSON object with the following structure:
+        # Enhanced prompt for detailed and factual meeting summary with strict reference mapping
+        system_prompt = f"""You are an expert meeting analyst and transcription specialist. Your task is to create a comprehensive, factual summary of the following meeting transcript in {target_language}.
+
+IMPORTANT: The transcript below has been processed to MERGE consecutive segments from the same speaker. The segment numbers [1], [2], [3], etc. represent these MERGED segments as they would appear in the frontend display.
+
+CRITICAL REFERENCE REQUIREMENTS:
+- ONLY use the MERGED segment numbers [1], [2], [3], etc. that appear in the transcript
+- These numbers correspond to how segments are displayed in the frontend interface
+- Every reference number in your JSON must exactly match a merged segment number
+- NEVER use reference numbers like [4-5], [1-2], or any format that doesn't exist in the transcript
+- If you reference segment [7], it MUST contain the information you're citing
+- Double-check that every reference number you use actually exists in the provided transcript
+- When information spans multiple merged segments, include ALL relevant segment numbers: [1] [2] [3]
+
+NOTE ABOUT SEGMENT MERGING:
+- Consecutive segments from the same speaker have been merged together
+- Each segment number [1], [2], [3] represents a complete thought/conversation turn
+- This matches exactly how users will see the transcript in the interface
+
+CONTENT ANALYSIS REQUIREMENTS:
+- Extract specific details, facts, quotes, and action items from what was actually said
+- Maintain complete factual accuracy - do not infer or assume information not explicitly stated
+- Include direct quotes when they capture key decisions or important points
+- Capture the nuances of discussions, including differing opinions or concerns raised
+
+Your response should be a clean, focused JSON object with this structure:
 {{
   "overview": {{
-    "content": "Brief meeting overview (purpose, participants, date)",
+    "content": "Brief meeting overview with main objectives and outcomes",
     "references": [1, 2, 3]
   }},
   "key_discussions": [
     {{
-      "topic": "Discussion topic",
-      "summary": "Summary of what was discussed",
+      "topic": "Main discussion topic",
+      "summary": "Comprehensive summary of the discussion including key points and conclusions",
       "references": [1, 2, 3]
     }}
   ],
   "decisions": [
     {{
-      "decision": "What was decided",
-      "responsible_party": "Who is responsible",
+      "decision": "Clear decision that was made",
+      "responsible_party": "Person responsible for implementation",
       "references": [1, 2]
     }}
   ],
   "action_items": [
     {{
-      "action": "Action item description",
-      "owner": "Person responsible",
+      "action": "Specific action to be taken",
+      "owner": "Person assigned to the action",
       "deadline": "Deadline if mentioned",
       "references": [1, 2]
     }}
   ],
   "unresolved_issues": [
     {{
-      "issue": "Description of unresolved issue",
+      "issue": "Issue that remains unresolved",
       "references": [1, 2]
     }}
   ]
 }}
 
-Instructions:
-1. Use the segment numbers [1], [2], [3], etc. from the transcript as references
-2. Each piece of information in the summary must include at least one reference to support it
-3. References should point to the exact segments where the information was discussed
-4. Maintain accuracy to the original conversation while organizing information logically
-5. Return ONLY valid JSON, no additional text or formatting
-6. Ensure all reference numbers are valid and correspond to actual segments in the transcript
+IMPORTANT FORMAT GUIDELINES:
+- Keep content fluent and readable
+- Embed references naturally within the content
+- Avoid redundant labels like "主要观点：" or "参考转录："
+- Focus on clear, concise communication
+- Each section should read like natural meeting notes
 
-Please analyze the transcript and create the structured summary with references:"""
+ANALYSIS GUIDELINES:
+1. CROSS-REFERENCE every claim with ONLY actual segment numbers from the transcript
+2. VERIFY each reference number exists in the transcript before including it in your response
+3. When information spans multiple segments, include ALL existing segment numbers: [1] [2] [3] [7]
+4. Preserve the original meaning and context - don't oversimplify complex discussions
+5. Include speaker names/identifiers when attributing statements or decisions
+6. Capture disagreements, alternative viewpoints, and concerns raised
+7. Note when decisions were made by consensus, vote, or unilateral action
+8. Include specific numbers, dates, names, and other concrete details mentioned
+9. If information is unclear or ambiguous, note this rather than making assumptions
+10. For action items, ensure they are specific and actionable, not vague intentions
+11. Include direct quotes when they add clarity or capture important nuances
+12. REFERENCE VALIDATION: Before finalizing, mentally verify: "Does segment [X] actually contain this information?"
+
+REFERENCE FORMAT RULES:
+- Use ONLY single brackets with numbers: [1], [2], [3]
+- NEVER use ranges like [1-2] or [4-5]
+- NEVER use any reference format that doesn't exactly match the transcript
+- Each reference number must correspond to an actual segment in the provided transcript
+- If you're unsure about a reference, DON'T include it rather than risk being incorrect
+
+QUALITY STANDARDS:
+- Every factual claim must have supporting references from actual transcript segments
+- No invented information or speculation
+- Capture the full complexity of discussions
+- Maintain professional, objective tone
+- Organize information logically while preserving chronological relationships
+- Use the exact language and terminology used in the meeting when appropriate
+- 100% reference accuracy is mandatory - no exceptions
+
+Return ONLY valid JSON. If a section has no relevant content, use an empty array []. Focus exclusively on what was actually discussed in the provided transcript segments, using ONLY the exact reference numbers that appear in the transcript."""
+
+        # Create user message with clear instructions about merged segment numbers
+        user_message = f"""MEETING TRANSCRIPT FOR ANALYSIS:
+
+{transcript_with_refs}
+
+IMPORTANT: The transcript above contains MERGED segments numbered from [1] to [{len(transcript_segments)}].
+These merged segments combine consecutive content from the same speaker.
+
+REFERENCE REQUIREMENTS:
+- You MUST ONLY use these exact merged segment numbers in your references
+- NEVER invent or guess reference numbers
+- Every reference you use must correspond to an actual merged segment in the transcript above
+- These references will be used to highlight the correct segments in the frontend interface
+
+Please analyze the transcript and create the structured summary following the system prompt guidelines."""
 
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Meeting Transcript with Segment References:\n\n{transcript_with_refs}"}
+                {"role": "user", "content": user_message}
             ],
             model=os.getenv("OPENAI_MODEL_NAME"),
             timeout=600,  # Increase timeout for longer operations
@@ -760,10 +893,17 @@ Please analyze the transcript and create the structured summary with references:
         )
         raw_summary = chat_completion.choices[0].message.content
 
-        # Try to parse as JSON and format with clickable references
+        # Try to parse as JSON and validate references
         try:
-            import json
             summary_data = json.loads(raw_summary)
+
+            # Validate reference numbers
+            valid_segments = set(range(1, len(transcript_segments) + 1))
+            invalid_refs = validate_and_fix_references(summary_data, valid_segments)
+
+            if invalid_refs:
+                print(f"[Job {job_id}] Found and fixed invalid references: {invalid_refs}")
+
             # Store both the raw JSON and formatted markdown
             summary_with_json = {
                 "formatted_content": format_summary_as_markdown_with_refs(summary_data, transcript_segments),
@@ -773,7 +913,7 @@ Please analyze the transcript and create the structured summary with references:
             summary_json = json.dumps(summary_with_json, ensure_ascii=False, indent=2)
         except json.JSONDecodeError:
             # If JSON parsing fails, use the raw text as fallback
-            print(f"Failed to parse summary as JSON, using raw text")
+            print(f"[Job {job_id}] Failed to parse summary as JSON, using raw text")
             summary_json = raw_summary
 
         crud.update_job_summary(db, job_id=job_id, summary=summary_json)
@@ -1011,8 +1151,120 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         # If LLM optimization fails, return the original text
         return {"optimized_text": text}
 
+def format_reference_links(references):
+    """Format reference numbers with consecutive ranges like [1], [2-3], [5-7]"""
+    if not references:
+        return ""
+
+    # Sort and deduplicate references
+    sorted_refs = sorted(set(references))
+    if not sorted_refs:
+        return ""
+
+    # Group consecutive numbers
+    groups = []
+    start = sorted_refs[0]
+    prev = start
+
+    for num in sorted_refs[1:]:
+        if num == prev + 1:
+            # Still consecutive
+            prev = num
+        else:
+            # Break in sequence, save the current group
+            if start == prev:
+                groups.append(str(start))
+            else:
+                groups.append(f"{start}-{prev}")
+            start = num
+            prev = num
+
+    # Add the last group
+    if start == prev:
+        groups.append(str(start))
+    else:
+        groups.append(f"{start}-{prev}")
+
+    # Create clickable links
+    ref_links = []
+    for group in groups:
+        if '-' in group:
+            start, end = map(int, group.split('-'))
+            # For ranges, use the start number
+            ref_links.append(f'<a href="#" class="transcript-ref" data-segment="{start}" data-range="{start}-{end}">[{group}]</a>')
+        else:
+            # Single number
+            ref_links.append(f'<a href="#" class="transcript-ref" data-segment="{group}">[{group}]</a>')
+
+    return " ".join(ref_links)
+
+def validate_and_fix_references(summary_data, valid_segments):
+    """Validate and fix reference numbers in the summary data."""
+    invalid_refs_found = []
+
+    def validate_refs_in_list(items_list, section_name):
+        """Validate references in a list of items."""
+        invalid_refs = []
+        for item in items_list:
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    if key == 'references' and isinstance(value, list):
+                        # Filter out invalid references
+                        valid_refs = []
+                        for ref in value:
+                            if isinstance(ref, int) and ref in valid_segments:
+                                valid_refs.append(ref)
+                            elif isinstance(ref, str) and ref.isdigit():
+                                ref_num = int(ref)
+                                if ref_num in valid_segments:
+                                    valid_refs.append(ref_num)
+                                else:
+                                    invalid_refs.append(ref)
+                            else:
+                                invalid_refs.append(ref)
+                        item[key] = valid_refs
+                    elif isinstance(value, list):
+                        validate_refs_in_list(value, f"{section_name}.{key}")
+                    elif isinstance(value, dict):
+                        validate_refs_in_dict(value, f"{section_name}.{key}")
+        return invalid_refs
+
+    def validate_refs_in_dict(data_dict, section_name):
+        """Validate references in a dictionary."""
+        invalid_refs = []
+        for key, value in data_dict.items():
+            if key == 'references' and isinstance(value, list):
+                # Filter out invalid references
+                valid_refs = []
+                for ref in value:
+                    if isinstance(ref, int) and ref in valid_segments:
+                        valid_refs.append(ref)
+                    elif isinstance(ref, str) and ref.isdigit():
+                        ref_num = int(ref)
+                        if ref_num in valid_segments:
+                            valid_refs.append(ref_num)
+                        else:
+                            invalid_refs.append(ref)
+                    else:
+                        invalid_refs.append(ref)
+                data_dict[key] = valid_refs
+            elif isinstance(value, list):
+                invalid_refs.extend(validate_refs_in_list(value, f"{section_name}.{key}"))
+            elif isinstance(value, dict):
+                invalid_refs.extend(validate_refs_in_dict(value, f"{section_name}.{key}"))
+        return invalid_refs
+
+    # Validate all sections
+    for section_name, section_data in summary_data.items():
+        if isinstance(section_data, dict):
+            invalid_refs_found.extend(validate_refs_in_dict(section_data, section_name))
+        elif isinstance(section_data, list):
+            invalid_refs_found.extend(validate_refs_in_list(section_data, section_name))
+
+    return list(set(invalid_refs_found))  # Remove duplicates
+
 def format_summary_as_markdown_with_refs(summary_data, transcript_segments):
-    """Convert JSON summary data to formatted markdown with clickable transcript references."""
+    """Convert enhanced JSON summary data to clean, fluent markdown with embedded references."""
     markdown = ""
 
     # Overview section
@@ -1023,55 +1275,106 @@ def format_summary_as_markdown_with_refs(summary_data, transcript_segments):
             references = overview.get('references', [])
             markdown += f"## 会议概览\n\n{content}"
             if references:
-                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in references])
+                refs_text = format_reference_links(references)
                 markdown += f" {refs_text}"
             markdown += "\n\n"
-        else:
-            markdown += f"## 会议概览\n\n{overview}\n\n"
 
-    # Key discussions section
+    # Key discussions section - Clean format
     if summary_data.get("key_discussions"):
         markdown += "## 主要讨论内容\n\n"
         for discussion in summary_data["key_discussions"]:
-            markdown += f"### {discussion.get('topic', '未命名主题')}\n\n"
-            markdown += f"{discussion.get('summary', '')}"
-            if discussion.get("references"):
-                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in discussion["references"]])
+            topic = discussion.get('topic', '未命名主题')
+            summary = discussion.get('summary', '')
+            references = discussion.get('references', [])
+
+            markdown += f"### {topic}\n\n{summary}"
+            if references:
+                refs_text = format_reference_links(references)
                 markdown += f" {refs_text}"
             markdown += "\n\n"
 
-    # Decisions section
+    # Data and metrics section - Clean format
+    if summary_data.get("data_and_metrics"):
+        markdown += "## 数据与指标\n\n"
+        for data_item in summary_data["data_and_metrics"]:
+            metric = data_item.get('metric', '')
+            value = data_item.get('value', '')
+            context = data_item.get('context', '')
+            references = data_item.get("references", [])
+
+            content = f"**{metric}：** {value}"
+            if context:
+                content += f"（{context}）"
+
+            markdown += content
+            if references:
+                refs_text = format_reference_links(references)
+                markdown += f" {refs_text}"
+            markdown += "\n\n"
+
+    # Concerns and risks section - Clean format
+    if summary_data.get("concerns_and_risks"):
+        markdown += "## 风险与关注点\n\n"
+        for concern in summary_data["concerns_and_risks"]:
+            concern_text = concern.get('concern', '')
+            references = concern.get("references", [])
+
+            markdown += concern_text
+            if references:
+                refs_text = format_reference_links(references)
+                markdown += f" {refs_text}"
+            markdown += "\n\n"
+
+    # Decisions section - Clean format
     if summary_data.get("decisions"):
         markdown += "## 决策事项\n\n"
         for decision in summary_data["decisions"]:
-            markdown += f"**决策：** {decision.get('decision', '')}\n"
-            markdown += f"**负责人：** {decision.get('responsible_party', '未指定')}\n"
-            if decision.get("references"):
-                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in decision["references"]])
-                markdown += f"**参考转录：** {refs_text}\n"
-            markdown += "\n"
+            decision_text = decision.get('decision', '')
+            responsible_party = decision.get('responsible_party', '')
+            references = decision.get("references", [])
 
-    # Action items section
+            content = f"**决策：** {decision_text}"
+            if responsible_party:
+                content += f"\n**负责人：** {responsible_party}"
+
+            markdown += content
+            if references:
+                refs_text = format_reference_links(references)
+                markdown += f"\n{refs_text}"
+            markdown += "\n\n"
+
+    # Action items section - Clean format
     if summary_data.get("action_items"):
         markdown += "## 行动项目\n\n"
         for action in summary_data["action_items"]:
-            markdown += f"**行动项：** {action.get('action', '')}\n"
-            markdown += f"**负责人：** {action.get('owner', '未指定')}\n"
-            if action.get('deadline'):
-                markdown += f"**截止日期：** {action['deadline']}\n"
-            if action.get("references"):
-                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in action["references"]])
-                markdown += f"**参考转录：** {refs_text}\n"
-            markdown += "\n"
+            action_text = action.get('action', '')
+            owner = action.get('owner', '')
+            deadline = action.get('deadline', '')
+            references = action.get("references", [])
 
-    # Unresolved issues section
+            content = f"**行动项：** {action_text}"
+            if owner:
+                content += f"\n**负责人：** {owner}"
+            if deadline:
+                content += f"\n**截止日期：** {deadline}"
+
+            markdown += content
+            if references:
+                refs_text = format_reference_links(references)
+                markdown += f"\n{refs_text}"
+            markdown += "\n\n"
+
+    # Unresolved issues section - Clean format
     if summary_data.get("unresolved_issues"):
         markdown += "## 未解决问题\n\n"
         for issue in summary_data["unresolved_issues"]:
-            markdown += f"**问题：** {issue.get('issue', '')}\n"
-            if issue.get("references"):
-                refs_text = " ".join([f'<a href="#" class="transcript-ref" data-segment="{ref}">[{ref}]</a>' for ref in issue["references"]])
-                markdown += f"**参考转录：** {refs_text}\n"
-            markdown += "\n"
+            issue_text = issue.get('issue', '')
+            references = issue.get("references", [])
 
-    return markdown
+            markdown += f"**问题：** {issue_text}"
+            if references:
+                refs_text = format_reference_links(references)
+                markdown += f" {refs_text}"
+            markdown += "\n\n"
+
+    return markdown.strip()
