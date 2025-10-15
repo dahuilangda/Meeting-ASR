@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
@@ -31,6 +31,11 @@ export function JobDetailPage() {
     const [isAssistantOpen, setIsAssistantOpen] = useState(false);
     const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
     const [highlightedSegments, setHighlightedSegments] = useState<number[]>([]);
+
+    // Resizable panel states
+    const [leftPanelWidth, setLeftPanelWidth] = useState(60); // percentage
+    const [isResizing, setIsResizing] = useState(false);
+    const containerRef = useRef<HTMLDivElement>(null);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -42,6 +47,43 @@ export function JobDetailPage() {
     const [activeTab, setActiveTab] = useState(getInitialTab);
     
     const [isSummarizing, setIsSummarizing] = useState(false);
+
+    // Resizable panel handlers
+    const handleMouseDown = (e: React.MouseEvent) => {
+        e.preventDefault();
+        setIsResizing(true);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+        if (!isResizing || !containerRef.current) return;
+
+        const containerRect = containerRef.current.getBoundingClientRect();
+        const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+
+        // Constrain width between 30% and 80%
+        const constrainedWidth = Math.max(30, Math.min(80, newLeftWidth));
+        setLeftPanelWidth(constrainedWidth);
+    };
+
+    const handleMouseUp = () => {
+        setIsResizing(false);
+        document.body.style.cursor = 'default';
+        document.body.style.userSelect = 'auto';
+    };
+
+    useEffect(() => {
+        if (isResizing) {
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+
+            return () => {
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            };
+        }
+    }, [isResizing]);
 
     const handleSegmentReference = (segmentIndices: number | number[]) => {
         const indices = Array.isArray(segmentIndices) ? segmentIndices : [segmentIndices];
@@ -244,11 +286,21 @@ export function JobDetailPage() {
             </div>
 
             {/* Main Content Area */}
-            <div className="row">
+            <div
+                ref={containerRef}
+                className="d-flex mb-4"
+                style={{ height: '75vh', position: 'relative' }}
+            >
                 {/* Left Panel - Transcript */}
-                <div className="col-lg-7 mb-4">
+                <div
+                    style={{
+                        width: `${leftPanelWidth}%`,
+                        minWidth: '30%',
+                        maxWidth: '80%'
+                    }}
+                >
                     <div className="card h-100">
-                        <div className="card-body" style={{ height: '75vh', padding: '0' }}>
+                        <div className="card-body" style={{ height: '100%', padding: '0' }}>
                             {job.transcript ? (
                                 <TranscriptEditor
                                     jobId={job.id}
@@ -266,10 +318,43 @@ export function JobDetailPage() {
                     </div>
                 </div>
 
+                {/* Resizable Divider */}
+                <div
+                    style={{
+                        width: '4px',
+                        backgroundColor: '#e9ecef',
+                        cursor: 'col-resize',
+                        position: 'relative',
+                        flexShrink: 0,
+                        transition: isResizing ? 'none' : 'background-color 0.2s',
+                    }}
+                    onMouseDown={handleMouseDown}
+                    className="border-start border-end"
+                >
+                    <div
+                        style={{
+                            position: 'absolute',
+                            top: '50%',
+                            left: '50%',
+                            transform: 'translate(-50%, -50%)',
+                            width: '2px',
+                            height: '30px',
+                            backgroundColor: '#adb5bd',
+                            borderRadius: '1px',
+                        }}
+                    />
+                </div>
+
                 {/* Right Panel - Meeting Summary */}
-                <div className="col-lg-5 mb-4">
+                <div
+                    style={{
+                        width: `${100 - leftPanelWidth}%`,
+                        minWidth: '20%',
+                        maxWidth: '70%'
+                    }}
+                >
                     <div className="card h-100">
-                        <div className="card-body p-0" style={{ maxHeight: '75vh', overflowY: 'auto' }}>
+                        <div className="card-body p-0" style={{ height: '100%', overflowY: 'auto' }}>
                             <SummaryWithReferences
                                 summary={job?.summary}
                                 jobId={job.id}
