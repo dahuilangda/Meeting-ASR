@@ -64,34 +64,25 @@ export const sendAssistantChatStream = async (
 ) => {
     try {
         const token = localStorage.getItem('token');
-        console.log('🔐 Token:', token ? `${token.substring(0, 20)}...` : 'null');
 
         const requestData = {
             messages,
             systemPrompt,
         };
-        console.log('📤 发送流式聊天请求:', requestData);
 
         const response = await fetch(`${API_SERVER_URL}/assistant/chat/stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`,
-                'Accept': 'text/plain',
+                'Accept': 'text/event-stream',
                 'Cache-Control': 'no-cache',
             },
             body: JSON.stringify(requestData),
         });
 
-        console.log('📥 收到响应:', {
-            status: response.status,
-            statusText: response.statusText,
-            headers: Object.fromEntries(response.headers.entries())
-        });
-
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('❌ 响应错误:', errorText);
             throw new Error(`HTTP error! status: ${response.status}, detail: ${errorText}`);
         }
 
@@ -151,8 +142,8 @@ export const sendAssistantChatStream = async (
                             onComplete?.();
                             return;
                         }
-                    } catch (parseError) {
-                        console.error('Failed to parse SSE data:', parseError, payload);
+                    } catch {
+                        // Ignore malformed SSE data but keep stream active
                     }
                 }
             }

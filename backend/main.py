@@ -234,7 +234,7 @@ def ensure_audio_format(filepath: str) -> str:
             # Return the path to the converted file
             return temp_path
         except subprocess.CalledProcessError as e:
-            print(f"Error converting audio file: {e}")
+            logger.error(f"Error converting audio file: {e}")
             # If conversion fails, try to proceed with original file
             return filepath
     else:
@@ -257,7 +257,7 @@ def optimize_transcript_with_llm(transcript: str) -> str:
         # First, try with default settings
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
     except Exception as init_error:
-        print(f"Initial OpenAI client setup failed: {init_error}")
+        logger.warning(f"Initial OpenAI client setup failed: {init_error}")
         # Handle SSL certificate issues for custom endpoints
         try:
             import urllib3
@@ -275,7 +275,7 @@ def optimize_transcript_with_llm(transcript: str) -> str:
                 http_client=http_client
             )
         except Exception as e:
-            print(f"Error initializing OpenAI client: {e}")
+            logger.error(f"Error initializing OpenAI client: {e}")
             # If client initialization fails completely, return original transcript
             return transcript
     
@@ -310,7 +310,7 @@ def optimize_transcript_with_llm(transcript: str) -> str:
         return optimized_text
         
     except Exception as e:
-        print(f"Error optimizing transcript with LLM: {e}")
+        logger.error(f"Error optimizing transcript with LLM: {e}")
         # If LLM optimization fails, return the original transcript
         return transcript
 
@@ -319,28 +319,28 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
     converted_file = None  # Track converted file for cleanup
     
     try:
-        print(f"[Job {job_id}] Starting transcription & diarization for {filepath}")
+        logger.info(f"[Job {job_id}] Starting transcription & diarization for {filepath}")
         hf_token = os.getenv("HF_TOKEN")
         if not hf_token: raise ValueError("HF_TOKEN not set in .env file")
 
         # Ensure the audio file is in a compatible format
         converted_file = ensure_audio_format(filepath)
-        print(f"[Job {job_id}] Using converted file: {converted_file}")
+        logger.info(f"[Job {job_id}] Using converted file: {converted_file}")
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
         diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
         diarization_pipeline.to(torch.device(device))
         
-        print(f"[Job {job_id}] Using device: {device}")
+        logger.info(f"[Job {job_id}] Using device: {device}")
         
         # Run diarization first to identify speakers
-        print(f"[Job {job_id}] Running Pyannote diarization...")
+        logger.info(f"[Job {job_id}] Running Pyannote diarization...")
         diarization = diarization_pipeline(converted_file)
 
         # Debug: Print diarization object information
-        print(f"[Job {job_id}] Diarization object type: {type(diarization)}")
-        print(f"[Job {job_id}] Diarization object attributes: {[attr for attr in dir(diarization) if not attr.startswith('_')]}")
+        logger.debug(f"[Job {job_id}] Diarization object type: {type(diarization)}")
+        logger.debug(f"[Job {job_id}] Diarization attributes: {[attr for attr in dir(diarization) if not attr.startswith('_')]}")
 
         # Get speaker timestamps - using new pyannote API
         speaker_segments = []
@@ -354,18 +354,18 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                 for turn, track, speaker in diarization.itertracks(yield_label=True):
                     speaker_segments.append([turn.start, turn.end, speaker])
         except AttributeError as e:
-            print(f"[Job {job_id}] Error extracting speaker segments: {e}")
+            logger.warning(f"[Job {job_id}] Error extracting speaker segments: {e}")
             # Create a fallback segment if extraction fails
             speaker_segments = [[0.0, 10.0, "SPEAKER_00"]]
 
         speaker_df = pd.DataFrame(speaker_segments, columns=['start', 'end', 'speaker'])
         
         # DEBUG: Print detailed information about speaker segments
-        print(f"[Job {job_id}] Found {len(speaker_segments)} speaker segments: {set([s[2] for s in speaker_segments])}")
-        print(f"[Job {job_id}] First 5 speaker segments: {speaker_segments[:5] if len(speaker_segments) > 0 else 'None'}")
-        print(f"[Job {job_id}] Sample of speaker segments:")
+        logger.info(f"[Job {job_id}] Found {len(speaker_segments)} speaker segments: {set([s[2] for s in speaker_segments])}")
+        logger.debug(f"[Job {job_id}] First 5 speaker segments: {speaker_segments[:5] if len(speaker_segments) > 0 else 'None'}")
+        logger.debug(f"[Job {job_id}] Sample of speaker segments:")
         for i, seg in enumerate(speaker_segments[:10]):  # Print first 10 segments as sample
-            print(f"  [{i}] {seg[0]:.2f}s-{seg[1]:.2f}s: {seg[2]} (duration: {seg[1]-seg[0]:.2f}s)")
+            logger.debug(f"  [{i}] {seg[0]:.2f}s-{seg[1]:.2f}s: {seg[2]} (duration: {seg[1]-seg[0]:.2f}s)")
         
         # Load the audio file to get its duration for alignment and segment processing
         audio_data, sample_rate = librosa.load(converted_file)
@@ -373,7 +373,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         
         # Initialize the FunASR model once for the entire process
         from funasr import AutoModel
-        print(f"[Job {job_id}] Using FunASR for Chinese ASR with punctuation...")
+        logger.info(f"[Job {job_id}] Using FunASR for Chinese ASR with punctuation...")
         
         try:
             asr_model = AutoModel(
@@ -387,7 +387,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
             )
         except RuntimeError as e:
             if "Sizes of tensors must match" in str(e):
-                print(f"[Job {job_id}] Primary model failed with tensor size error, trying fallback model...")
+                logger.warning(f"[Job {job_id}] Primary model failed with tensor size error, trying fallback model...")
                 asr_model = AutoModel(
                     model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
                     model_revision="v2.0.4",
@@ -395,7 +395,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                     punc_model_revision="v2.0.4",
                 )
             elif "shape" in str(e).lower() or "dimension" in str(e).lower():
-                print(f"[Job {job_id}] Model failed with shape error, trying simpler configuration...")
+                logger.warning(f"[Job {job_id}] Model failed with shape error, trying simpler configuration...")
                 asr_model = AutoModel(
                     model="damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
                     punc_model="ct-punc",
@@ -404,7 +404,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                 raise e
         
         # Process each speaker segment individually to ensure alignment
-        print(f"[Job {job_id}] Processing {len(speaker_segments)} speaker segments for alignment...")
+        logger.info(f"[Job {job_id}] Processing {len(speaker_segments)} speaker segments for alignment...")
         
         # Create temporary files for each segment and transcribe individually
         import tempfile
@@ -417,7 +417,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
             segment_duration = end_time - start_time
             total_coverage += segment_duration
             
-            print(f"[Job {job_id}] Processing speaker segment {i+1}/{len(speaker_segments)}: {speaker_label} at {start_time:.2f}s-{end_time:.2f}s ({segment_duration:.2f}s)")
+            logger.debug(f"[Job {job_id}] Processing speaker segment {i+1}/{len(speaker_segments)}: {speaker_label} at {start_time:.2f}s-{end_time:.2f}s ({segment_duration:.2f}s)")
             
             # Extract the audio segment
             segment_start_sample = int(start_time * sample_rate)
@@ -429,7 +429,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
             
             # Skip very short segments (less than 0.1 seconds) to avoid processing errors
             if len(segment_audio) < sample_rate * 0.1:  # Less than 0.1 seconds
-                print(f"[Job {job_id}] Skipping very short segment {start_time:.2f}s-{end_time:.2f}s")
+                logger.debug(f"[Job {job_id}] Skipping very short segment {start_time:.2f}s-{end_time:.2f}s")
                 continue
             
             # Save the segment temporarily for FunASR processing
@@ -516,12 +516,12 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                         'end_time': end_time,
                         'word_level_info': adjusted_timestamps
                     })
-                    print(f"[Job {job_id}] Transcribed segment for {speaker_label}: '{segment_text[:100]}...' ({segment_duration:.2f}s)")
+                    logger.debug(f"[Job {job_id}] Transcribed segment for {speaker_label}: '{segment_text[:100]}...' ({segment_duration:.2f}s)")
                 else:
-                    print(f"[Job {job_id}] No text extracted for segment {i+1}, speaker {speaker_label}")
+                    logger.info(f"[Job {job_id}] No text extracted for segment {i+1}, speaker {speaker_label}")
                 
             except Exception as e:
-                print(f"[Job {job_id}] Error processing speaker segment {i+1}: {e}")
+                logger.error(f"[Job {job_id}] Error processing speaker segment {i+1}: {e}")
                 import traceback
                 traceback.print_exc()  # Print full stack trace for debugging
                 # Add an empty segment if there was an error
@@ -539,11 +539,11 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         
         # Calculate coverage statistics
         coverage_percentage = (total_coverage / audio_duration) * 100 if audio_duration > 0 else 0
-        print(f"[Job {job_id}] Total speaker coverage: {total_coverage:.2f}s out of {audio_duration:.2f}s ({coverage_percentage:.1f}%)")
+        logger.info(f"[Job {job_id}] Total speaker coverage: {total_coverage:.2f}s out of {audio_duration:.2f}s ({coverage_percentage:.1f}%)")
         
         # If no segments were processed successfully, create a fallback
         if not result_segments:
-            print(f"[Job {job_id}] No valid segments processed, running full audio transcription as fallback...")
+            logger.warning(f"[Job {job_id}] No valid segments processed, running full audio transcription as fallback...")
             # Fallback to the original approach if no segments were processed
             res = asr_model.generate(
                 input=converted_file,
@@ -626,11 +626,11 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         # Store the transcript with native punctuation
         crud.update_job_transcript(db, job_id=job_id, transcript=formatted_transcript, timing_info=timing_info_json)
         persist_transcript_to_disk(job_id, formatted_transcript, sentences_with_timing)
-        print(f"[Job {job_id}] Processing completed with speakers: {set([seg['speaker'] for seg in result_segments])}")
-        print(f"[Job {job_id}] Result segments: {len(result_segments)}")
+        logger.info(f"[Job {job_id}] Processing completed with speakers: {set([seg['speaker'] for seg in result_segments])}")
+        logger.info(f"[Job {job_id}] Result segments: {len(result_segments)}")
 
     except Exception as e:
-        print(f"[Job {job_id}] Processing failed: {e}")
+        logger.error(f"[Job {job_id}] Processing failed: {e}")
         import traceback
         traceback.print_exc()  # Print full stack trace for debugging
         crud.update_job_status(db, job_id=job_id, status="failed")
@@ -852,11 +852,6 @@ from openai import OpenAI
 import httpx
 import os
 
-# Print environment variables for debugging
-print(f'DEBUG: OPENAI_BASE_URL={os.getenv("OPENAI_BASE_URL")}')
-print(f'DEBUG: OPENAI_MODEL_NAME={os.getenv("OPENAI_MODEL_NAME")}')
-print(f'DEBUG: OPENAI_API_KEY is set: {bool(os.getenv("OPENAI_API_KEY"))}')
-
 def create_openai_client():
     """Initialize OpenAI client with fallback handling for custom base URLs."""
     import urllib3
@@ -865,7 +860,7 @@ def create_openai_client():
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
     except Exception as init_error:
-        print(f"Initial OpenAI client setup failed: {init_error}")
+        logger.warning(f"Initial OpenAI client setup failed: {init_error}")
         try:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             http_client = httpx.Client(verify=False, timeout=60.0)
@@ -875,7 +870,7 @@ def create_openai_client():
                 http_client=http_client
             )
         except Exception as e:
-            print(f"Fallback OpenAI client setup failed: {e}")
+            logger.error(f"Fallback OpenAI client setup failed: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
     return client
 
@@ -892,37 +887,7 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
     target_language = request.target_language if request else "Chinese"
 
     try:
-        # Initialize OpenAI client with proper error handling similar to optimize_transcript_with_llm
-        from openai import OpenAI
-        import urllib3
-        import httpx
-        import os
-        
-        # Initialize OpenAI client with proper error handling
-        client = None
-        try:
-            # First, try with default settings
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
-        except Exception as init_error:
-            print(f"Initial OpenAI client setup failed: {init_error}")
-            # Handle SSL certificate issues for custom endpoints
-            try:
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                
-                # Create httpx client with SSL verification disabled for custom endpoints
-                http_client = httpx.Client(
-                    verify=False,  # Disable SSL verification for self-signed certificates
-                    timeout=60.0   # Increase timeout
-                )
-                
-                client = OpenAI(
-                    api_key=os.getenv("OPENAI_API_KEY"), 
-                    base_url=os.getenv("OPENAI_BASE_URL"),
-                    http_client=http_client
-                )
-            except Exception as e:
-                print(f"Error initializing OpenAI client: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to initialize OpenAI client: {e}")
+        client = create_openai_client()
         
         # Parse transcript with timing information and group consecutive segments by same speaker
         original_segments = []
@@ -941,11 +906,11 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
                             'do_not_merge_with_previous': bool(segment.get('do_not_merge_with_previous', False))
                         })
             except Exception as e:
-                print(f"Error parsing timing info for summary: {e}")
+                logger.warning(f"Error parsing timing info for summary: {e}")
 
         # Fallback: if no timing info or no valid segments, try to parse from plain transcript
         if not original_segments and job.transcript:
-            print(f"[Job {job_id}] No valid segments from timing info, parsing plain transcript")
+            logger.info(f"[Job {job_id}] No valid segments from timing info, parsing plain transcript")
             lines = job.transcript.split('\n')
             for idx, line in enumerate(lines):
                 line = line.strip()
@@ -963,7 +928,7 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
                         })
 
         if not original_segments:
-            print(f"[Job {job_id}] No valid transcript segments found for summary generation")
+            logger.warning(f"[Job {job_id}] No valid transcript segments found for summary generation")
             raise HTTPException(status_code=400, detail="No valid transcript content found for summary generation")
 
         # Group consecutive segments by the same speaker (same logic as frontend)
@@ -998,7 +963,7 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
                     })
 
         transcript_segments = grouped_segments
-        print(f"[Job {job_id}] Found {len(original_segments)} original segments, grouped into {len(transcript_segments)} display segments for summary")
+        logger.info(f"[Job {job_id}] Prepared {len(transcript_segments)} merged segments for summary generation")
 
         # Create prompt with clear segment references (using merged segment numbers)
         transcript_with_refs = ""
@@ -1010,9 +975,7 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
         # Add segment count and validation info
         transcript_with_refs = f"TRANSCRIPT CONTAINS {len(transcript_segments)} MERGED SEGMENTS NUMBERED [1] THROUGH [{len(transcript_segments)}]\n" + "="*80 + "\n" + transcript_with_refs
 
-        print(f"[Job {job_id}] Generated transcript with {len(transcript_segments)} merged segments for summary")
-        print(f"[Job {job_id}] Available segment numbers: 1 to {len(transcript_segments)}")
-        print(f"[Job {job_id}] Sample transcript for summary: {transcript_with_refs[:500]}...")  # Debug log
+        logger.debug(f"[Job {job_id}] Summary prompt preview: {transcript_with_refs[:200]}...")
 
         # Enhanced prompt for detailed and factual meeting summary with strict reference mapping
         system_prompt = f"""You are an expert meeting analyst and transcription specialist. Your task is to create a comprehensive, factual summary of the following meeting transcript in {target_language}.
@@ -1130,7 +1093,8 @@ REFERENCE REQUIREMENTS:
 
 Please analyze the transcript and create the structured summary following the system prompt guidelines."""
 
-        chat_completion = client.chat.completions.create(
+        chat_completion = await asyncio.to_thread(
+            client.chat.completions.create,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -1150,7 +1114,7 @@ Please analyze the transcript and create the structured summary following the sy
             invalid_refs = validate_and_fix_references(summary_data, valid_segments)
 
             if invalid_refs:
-                print(f"[Job {job_id}] Found and fixed invalid references: {invalid_refs}")
+                logger.info(f"[Job {job_id}] Adjusted invalid references: {invalid_refs}")
 
             # Store both the raw JSON and formatted markdown
             summary_with_json = {
@@ -1161,7 +1125,7 @@ Please analyze the transcript and create the structured summary following the sy
             summary_json = json.dumps(summary_with_json, ensure_ascii=False, indent=2)
         except json.JSONDecodeError:
             # If JSON parsing fails, use the raw text as fallback
-            print(f"[Job {job_id}] Failed to parse summary as JSON, using raw text")
+            logger.warning(f"[Job {job_id}] Failed to parse summary as JSON, storing raw text")
             summary_json = raw_summary
 
         crud.update_job_summary(db, job_id=job_id, summary=summary_json)
@@ -1170,7 +1134,7 @@ Please analyze the transcript and create the structured summary following the sy
         updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
         return updated_job
     except Exception as e:
-        print(f"Error in summarize_job: {e}")
+        logger.error(f"Error in summarize_job: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate summary: {e}")
 
 
@@ -1314,7 +1278,7 @@ async def assistant_chat(request: ChatRequest, current_user: schemas.User = Depe
         reply = chat_completion.choices[0].message.content
         return ChatResponse(reply=reply)
     except Exception as e:
-        print(f"Error in assistant_chat: {e}")
+        logger.error(f"Error in assistant_chat: {e}")
         raise HTTPException(status_code=500, detail=f"Assistant chat failed: {e}")
 
 @app.post("/assistant/chat/stream")
@@ -1379,7 +1343,7 @@ async def assistant_chat_stream(request: ChatRequest, current_user: schemas.User
 
                 asyncio.run_coroutine_threadsafe(queue.put(sentinel_done), loop)
             except Exception as worker_error:
-                print(f"Error in stream worker: {worker_error}")
+                logger.error(f"Error in stream worker: {worker_error}")
                 asyncio.run_coroutine_threadsafe(queue.put((sentinel_error, str(worker_error))), loop)
 
         threading.Thread(target=stream_worker, daemon=True).start()
@@ -1423,36 +1387,7 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         speaker = request.get("speaker", "")
         
         # Create a prompt that includes the speaker context to maintain proper speaker labels
-        import os
-        from openai import OpenAI
-        import httpx
-        
-        # Initialize OpenAI client
-        try:
-            # First, try with default settings
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
-        except Exception as init_error:
-            print(f"Initial OpenAI client setup failed: {init_error}")
-            # Handle SSL certificate issues for custom endpoints
-            try:
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                
-                # Create httpx client with SSL verification disabled for custom endpoints
-                http_client = httpx.Client(
-                    verify=False,  # Disable SSL verification for self-signed certificates
-                    timeout=60.0   # Increase timeout
-                )
-                
-                client = OpenAI(
-                    api_key=os.getenv("OPENAI_API_KEY"), 
-                    base_url=os.getenv("OPENAI_BASE_URL"),
-                    http_client=http_client
-                )
-            except Exception as e:
-                print(f"Error initializing OpenAI client: {e}")
-                # If client initialization fails completely, return original text
-                return {"optimized_text": text}
+        client = create_openai_client()
         
         # Create prompt with context about maintaining speaker labels
         prompt = f"""
@@ -1472,7 +1407,8 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         请输出优化后的转录段落：
         """
         
-        chat_completion = client.chat.completions.create(
+        chat_completion = await asyncio.to_thread(
+            client.chat.completions.create,
             messages=[
                 {"role": "system", "content": "You are an expert at improving speech-to-text transcriptions. You maintain speaker context while improving readability, fixing obvious errors, and making the conversation more coherent."},
                 {"role": "user", "content": prompt}
@@ -1486,7 +1422,7 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         return {"optimized_text": optimized_text}
 
     except Exception as e:
-        print(f"Error optimizing segment: {e}")
+        logger.error(f"Error optimizing segment: {e}")
         # If LLM optimization fails, return the original text
         return {"optimized_text": text}
 

@@ -51,6 +51,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [isMinimized, setIsMinimized] = useState(false);
+  const [activeAssistantMessageId, setActiveAssistantMessageId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -79,6 +80,15 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const activeAssistantMessage = useMemo(() => {
+    if (!activeAssistantMessageId) {
+      return null;
+    }
+    return messages.find(msg => msg.id === activeAssistantMessageId) ?? null;
+  }, [messages, activeAssistantMessageId]);
+
+  const showThinkingIndicator = isSending && (!activeAssistantMessage || !activeAssistantMessage.content.trim());
 
   const appendMessage = (message: ConversationMessage) => {
     setMessages(prev => [...prev, message]);
@@ -114,15 +124,14 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         content: '',
       };
       appendMessage(assistantMessage);
+      setActiveAssistantMessageId(assistantMessageId);
 
       // 使用流式API
-      console.log('🚀 开始流式聊天调用');
       await sendAssistantChatStream(
         history,
         systemPrompt,
         // onChunk - 接收到内容块时的回调
         (chunk: string) => {
-          console.log('📝 收到内容块:', chunk);
           setMessages(prev => prev.map(msg =>
             msg.id === assistantMessageId
               ? { ...msg, content: msg.content + chunk }
@@ -131,12 +140,11 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         },
         // onComplete - 流式完成时的回调
         () => {
-          console.log('✅ 流式聊天完成');
           setIsSending(false);
+          setActiveAssistantMessageId(null);
         },
         // onError - 错误处理
         (error: string) => {
-          console.error('❌ Stream chat failed', error);
           const friendlyError = error || 'Unable to get assistant response, please try again later.';
           setError(friendlyError);
 
@@ -147,11 +155,11 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
               : msg
           ));
           setIsSending(false);
+          setActiveAssistantMessageId(null);
         }
       );
 
     } catch (err) {
-      console.error('Assistant chat failed', err);
       const friendlyError = err instanceof Error ? err.message : 'Unable to get assistant response, please try again later.';
       setError(friendlyError);
       appendMessage({
@@ -160,6 +168,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         content: 'Sorry, I am currently unable to process this request. Please try again later.'
       });
       setIsSending(false);
+      setActiveAssistantMessageId(null);
     }
   };
 
@@ -182,6 +191,7 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
     }]);
     setError(null);
     setUserInput('');
+    setActiveAssistantMessageId(null);
   };
 
   // Mouse event handlers for dragging
@@ -386,69 +396,74 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
 
       {!isMinimized && (
         <div ref={scrollRef} className="flex-grow-1 px-3 py-2" style={{ overflowY: 'auto', fontSize: '0.85rem', backgroundColor: '#fff' }}>
-          {messages.map(message => (
-            <div key={message.id} className={`d-flex mb-2 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
-              <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'} position-relative`} style={{ maxWidth: '90%' }}>
-                {message.role === 'assistant' ? (
-                  <>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                    {/* 流式响应的打字指示器 */}
-                    {message.content && isSending && messages[messages.length - 1]?.id === message.id && (
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          marginLeft: '2px'
-                        }}
-                      >
+          {messages.map(message => {
+            if (message.role === 'assistant' && !message.content.trim()) {
+              return null;
+            }
+            return (
+              <div key={message.id} className={`d-flex mb-2 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
+                <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'} position-relative`} style={{ maxWidth: '90%' }}>
+                  {message.role === 'assistant' ? (
+                    <>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                      {/* 流式响应的打字指示器 */}
+                      {message.content && isSending && messages[messages.length - 1]?.id === message.id && (
                         <span
                           style={{
-                            width: '4px',
-                            height: '4px',
-                            borderRadius: '50%',
-                            backgroundColor: '#6c757d',
-                            margin: '0 1px',
-                            animation: 'typing 1.4s infinite',
-                            animationDelay: '0s'
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            marginLeft: '2px'
                           }}
-                        />
-                        <span
-                          style={{
-                            width: '4px',
-                            height: '4px',
-                            borderRadius: '50%',
-                            backgroundColor: '#6c757d',
-                            margin: '0 1px',
-                            animation: 'typing 1.4s infinite',
-                            animationDelay: '0.2s'
-                          }}
-                        />
-                        <span
-                          style={{
-                            width: '4px',
-                            height: '4px',
-                            borderRadius: '50%',
-                            backgroundColor: '#6c757d',
-                            margin: '0 1px',
-                            animation: 'typing 1.4s infinite',
-                            animationDelay: '0.4s'
-                          }}
-                        />
+                        >
+                          <span
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '50%',
+                              backgroundColor: '#6c757d',
+                              margin: '0 1px',
+                              animation: 'typing 1.4s infinite',
+                              animationDelay: '0s'
+                            }}
+                          />
+                          <span
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '50%',
+                              backgroundColor: '#6c757d',
+                              margin: '0 1px',
+                              animation: 'typing 1.4s infinite',
+                              animationDelay: '0.2s'
+                            }}
+                          />
+                          <span
+                            style={{
+                              width: '4px',
+                              height: '4px',
+                              borderRadius: '50%',
+                              backgroundColor: '#6c757d',
+                              margin: '0 1px',
+                              animation: 'typing 1.4s infinite',
+                              animationDelay: '0.4s'
+                            }}
+                          />
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    message.content.split('\n').map((line, idx) => (
+                      <span key={idx}>
+                        {line}
+                        {idx !== message.content.split('\n').length - 1 && <br />}
                       </span>
-                    )}
-                  </>
-                ) : (
-                  message.content.split('\n').map((line, idx) => (
-                    <span key={idx}>
-                      {line}
-                      {idx !== message.content.split('\n').length - 1 && <br />}
-                    </span>
-                  ))
-                )}
+                    ))
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-          {isSending && (
+            );
+          })}
+          {showThinkingIndicator && (
             <div className="d-flex mb-2 justify-content-start">
               <div className="p-2 rounded-3 bg-light border" style={{ maxWidth: '90%' }}>
                 <span className="spinner-border spinner-border-sm me-2" role="status"></span>
