@@ -59,3 +59,5 @@ Thumbs.db
 # Dependency markers
 .deps_installed
 backend/sqlite.db.backup.20251016_152923
+backend/.env
+backend/test_warnings.py

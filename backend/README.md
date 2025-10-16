@@ -7,7 +7,7 @@ The backend service for the Meeting ASR (Automatic Speech Recognition) applicati
 The backend provides:
 - User authentication and management
 - Audio file upload and processing
-- Automatic speech recognition with Whisper
+- Automatic speech recognition with FunASR
 - Speaker diarization using Pyannote.audio
 - LLM-powered transcript optimization
 - Meeting summarization
@@ -29,7 +29,7 @@ The backend provides:
 - **Framework**: FastAPI
 - **Database**: SQLite (with SQLAlchemy ORM)
 - **Authentication**: JWT tokens with OAuth2
-- **ASR Engine**: OpenAI Whisper
+- **ASR Engine**: FunASR (Paraformer)
 - **Speaker Diarization**: Pyannote.audio
 - **Audio Processing**: FFMPEG for format conversion
 - **LLM Integration**: OpenAI-compatible API for transcript optimization and summarization
@@ -92,7 +92,13 @@ OPENAI_MODEL_NAME=gpt-3.5-turbo
 HF_TOKEN=your-huggingface-token
 HF_ENDPOINT=https://hf-mirror.com
 DATABASE_URL=sqlite:///./sqlite.db
+# Queue concurrency controls (optional)
+JOB_QUEUE_MAX_CONCURRENT=3
+JOB_QUEUE_MAX_SIZE=50
+JOB_QUEUE_MAX_PER_USER=2
 ```
+
+Override the queue settings as needed; restart the backend for changes to take effect.
 
 ## Running the Server
 
@@ -135,7 +141,7 @@ The backend follows a standard FastAPI structure with:
 
 1. User uploads an audio/video file
 2. File is converted to compatible format using FFMPEG
-3. Whisper processes audio for speech-to-text conversion
+3. FunASR processes audio for speech-to-text conversion
 4. Pyannote.audio performs speaker diarization
 5. Results are aligned and formatted into speaker-tagged transcript
 6. LLM optimizes transcript for readability and accuracy

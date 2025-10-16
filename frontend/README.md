@@ -63,7 +63,9 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
    Create a `.env` file in the frontend directory:
    ```env
    REACT_APP_API_URL=http://localhost:8000
+   FORK_TS_CHECKER_MEMORY_LIMIT=4096
    ```
+   Increase or decrease `FORK_TS_CHECKER_MEMORY_LIMIT` if TypeScript checking exhausts memory on your machine.
 
 4. **Start the development server**:
    ```bash

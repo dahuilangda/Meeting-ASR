@@ -6,18 +6,15 @@ Provides proper job isolation, queuing, and real-time status updates
 
 import asyncio
 import os
-import json
-import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Callable
-from dataclasses import dataclass, asdict
-from pathlib import Path
+from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
 from database.database import SessionLocal
-from database.models import Job, JobStatus, User
+from database.models import Job, JobStatus
 from database.crud import update_job_status, update_job_progress
 
 # Configure logging
@@ -41,7 +38,7 @@ class JobTask:
 class JobQueueManager:
     """Multi-user job queue manager with proper isolation and async processing"""
 
-    def __init__(self, max_concurrent_jobs: int = 3, max_queue_size: int = 50):
+    def __init__(self, max_concurrent_jobs: int = 3, max_queue_size: int = 50, max_jobs_per_user: Optional[int] = None):
         self.max_concurrent_jobs = max_concurrent_jobs
         self.max_queue_size = max_queue_size
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_size)
@@ -51,9 +48,13 @@ class JobQueueManager:
         self.is_running = False
         self.websocket_connections: Dict[int, List] = {}  # user_id -> list of connections
         self._worker_task: Optional[asyncio.Task] = None
+        self._process_handler: Optional[Callable[[int, str, Callable[[], Session]], None]] = None
 
         # Rate limiting per user (max 2 concurrent jobs per user)
-        self.max_jobs_per_user = 2
+        if max_jobs_per_user is not None and max_jobs_per_user > 0:
+            self.max_jobs_per_user = max_jobs_per_user
+        else:
+            self.max_jobs_per_user = 2
 
     async def start(self):
         """Start the job queue manager"""
@@ -75,6 +76,10 @@ class JobQueueManager:
                 pass
         self.executor.shutdown(wait=True)
         logger.info("Job queue manager stopped")
+
+    def set_processing_handler(self, handler: Callable[[int, str, Callable[[], Session]], None]) -> None:
+        """Register the callable that performs the actual transcription work."""
+        self._process_handler = handler
 
     async def add_job(self, job_id: int, user_id: int, file_path: str, filename: str,
                      priority: int = 0) -> bool:
@@ -105,7 +110,8 @@ class JobQueueManager:
             file_path=file_path,
             filename=filename,
             priority=priority,
-            created_at=datetime.now()
+            created_at=datetime.now(),
+            callback=self._process_handler
         )
 
         try:
@@ -259,6 +265,32 @@ class JobQueueManager:
                 self._process_audio_file,
                 job_task
             )
+            # Refresh job state for notifications
+            with SessionLocal() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job_task.status = job.status.value
+                    if job.progress is not None:
+                        job_task.progress = job.progress
+                    job_task.error_message = job.error_message
+                    if job.status == JobStatus.COMPLETED:
+                        update_job_progress(db, job_id, 100.0)
+                        job_task.progress = 100.0
+                    elif job.status == JobStatus.FAILED:
+                        raise RuntimeError(job.error_message or "Transcription failed")
+                else:
+                    update_job_progress(db, job_id, 100.0)
+                    job_task.progress = 100.0
+                    job_task.status = JobStatus.COMPLETED.value
+
+            await self._notify_user(user_id, {
+                "type": "job_completed",
+                "job_id": job_id,
+                "filename": filename,
+                "status": job_task.status,
+                "progress": job_task.progress,
+                "message": f"Finished processing '{filename}'"
+            })
 
         except Exception as e:
             logger.error(f"Error processing job {job_id}: {e}")
@@ -287,64 +319,18 @@ class JobQueueManager:
 
     def _process_audio_file(self, job_task: JobTask):
         """Process audio file - this runs in a separate thread"""
-        # This is a placeholder for the actual audio processing
-        # In a real implementation, this would use FunASR or other ASR services
-
         job_id = job_task.job_id
         file_path = job_task.file_path
 
+        handler = job_task.callback or self._process_handler
+        if handler is None:
+            raise RuntimeError("No processing handler configured for job queue")
+
         try:
-            # Simulate processing time
-            import time
-            total_steps = 10
-
-            for step in range(total_steps):
-                if not self.is_running:
-                    break
-
-                # Update progress
-                progress = (step + 1) / total_steps
-                job_task.progress = progress
-
-                # Update database progress
-                with SessionLocal() as db:
-                    update_job_progress(db, job_id, progress * 100)
-
-                # Notify user (this would be better with WebSocket)
-                # For now, we'll just log
-                logger.info(f"Job {job_id} progress: {progress * 100:.1f}%")
-
-                # Simulate processing time
-                time.sleep(2)
-
-            # For now, create a dummy transcript
-            dummy_transcript = f"This is a dummy transcript for {job_task.filename}. " \
-                             f"In a real implementation, this would be the actual ASR output."
-
-            dummy_timing_info = json.dumps([
-                {"start": 0.0, "end": 3.0, "speaker": "Speaker 1", "text": "Hello everyone"},
-                {"start": 3.0, "end": 6.0, "speaker": "Speaker 2", "text": "Hi there"}
-            ])
-
-            # Update job with results
-            completed_at = datetime.now()
-            processing_time = (completed_at - job_task.created_at).total_seconds()
-
-            with SessionLocal() as db:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if job:
-                    job.transcript = dummy_transcript
-                    job.timing_info = dummy_timing_info
-                    job.status = JobStatus.COMPLETED
-                    job.completed_at = completed_at
-                    job.processing_time = processing_time
-                    job.progress = 100.0
-                    db.commit()
-
+            handler(job_id, file_path, SessionLocal)
             job_task.status = JobStatus.COMPLETED.value
             job_task.progress = 100.0
-
-            logger.info(f"Job {job_id} completed successfully")
+            logger.info(f"Job {job_id} processed successfully via registered handler")
 
         except Exception as e:
             logger.error(f"Error in audio processing for job {job_id}: {e}")
@@ -365,5 +351,47 @@ class JobQueueManager:
         """Set the WebSocket manager for notifications"""
         self.websocket_manager = websocket_manager
 
+# Helper to parse integer environment variables safely
+def _get_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning(f"Ignoring invalid value '{raw}' for {name}; using default {default}")
+        return default
+
+
 # Global job queue manager instance
-job_queue_manager = JobQueueManager()
+_max_concurrent = _get_positive_int_env("JOB_QUEUE_MAX_CONCURRENT", 3)
+_max_queue_size = _get_positive_int_env("JOB_QUEUE_MAX_SIZE", 50)
+_max_jobs_per_user = os.getenv("JOB_QUEUE_MAX_PER_USER")
+_max_jobs_per_user_int = None
+if _max_jobs_per_user:
+    try:
+        parsed_value = int(_max_jobs_per_user)
+        if parsed_value > 0:
+            _max_jobs_per_user_int = parsed_value
+        else:
+            raise ValueError
+    except ValueError:
+        logger.warning(
+            f"Ignoring invalid value '{_max_jobs_per_user}' for JOB_QUEUE_MAX_PER_USER; using default"
+        )
+
+job_queue_manager = JobQueueManager(
+    max_concurrent_jobs=_max_concurrent,
+    max_queue_size=_max_queue_size,
+    max_jobs_per_user=_max_jobs_per_user_int
+)
+
+logger.info(
+    "Job queue configured with max_concurrent_jobs=%s, max_queue_size=%s, max_jobs_per_user=%s",
+    _max_concurrent,
+    _max_queue_size,
+    _max_jobs_per_user_int or 2
+)

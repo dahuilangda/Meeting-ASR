@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import List, Optional
 import datetime
 from enum import Enum
@@ -25,6 +25,8 @@ class JobUpdate(BaseModel):
     summary: Optional[str] = None
 
 class Job(JobBase):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
     id: int
     status: JobStatusEnum
     created_at: datetime.datetime
@@ -39,9 +41,6 @@ class Job(JobBase):
     transcript: Optional[str] = None
     timing_info: Optional[str] = None
     summary: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 class JobStatusUpdate(BaseModel):
     job_id: int
@@ -72,6 +71,8 @@ class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
     id: int
     role: UserRole
     is_active: bool
@@ -79,19 +80,15 @@ class UserResponse(UserBase):
     last_login: Optional[datetime.datetime] = None
     job_count: Optional[int] = 0
 
-    class Config:
-        from_attributes = True
-
 class User(UserBase):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
     id: int
     role: UserRole
     is_active: bool
     created_at: datetime.datetime
     last_login: Optional[datetime.datetime] = None
     jobs: List[JobBase] = []
-
-    class Config:
-        from_attributes = True
 
 class PasswordChange(BaseModel):
     current_password: str

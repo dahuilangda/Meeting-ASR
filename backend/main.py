@@ -2,6 +2,8 @@ from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, B
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional
+from contextlib import asynccontextmanager
+from pydantic import ConfigDict
 import shutil
 import os
 import json
@@ -20,17 +22,46 @@ from job_queue import job_queue_manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+
+# Suppress warnings from third-party libraries
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning, module='pyannote.*')
+warnings.filterwarnings("ignore", category=UserWarning, module='pydantic._internal.*')
+warnings.filterwarnings("ignore", category=UserWarning, message='.*Valid config keys have changed in V2.*')
+warnings.filterwarnings("ignore", category=DeprecationWarning, module='pydantic.*')
+warnings.filterwarnings("ignore", message='.*allow_population_by_field_name.*')
+
 logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file FIRST
 load_dotenv()
 
-# HF_ENDPOINT - commented out for now due to connection issues
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+# Suppress deprecation warnings globally
+import os
+os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:pyannote.*,ignore::SyntaxWarning:pyannote.*,ignore::UserWarning:pydantic.*,ignore::DeprecationWarning:pydantic.*"
+
+# HF_ENDPOINT
+if not os.getenv("HF_ENDPOINT"):
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 # --- App and DB Setup ---
 models.Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Meeting ASR Multi-User System", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle events"""
+    # Startup
+    job_queue_manager.set_websocket_manager(manager)
+    await job_queue_manager.start()
+    logger.info("Meeting ASR Multi-User System started successfully")
+
+    yield
+
+    # Shutdown
+    await job_queue_manager.stop()
+    logger.info("Meeting ASR Multi-User System shut down")
+
+app = FastAPI(title="Meeting ASR Multi-User System", version="2.0.0", lifespan=lifespan)
 
 # WebSocket connection manager for real-time updates
 class ConnectionManager:
@@ -64,20 +95,6 @@ class ConnectionManager:
                 self.active_connections[user_id].remove(conn)
 
 manager = ConnectionManager()
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the job queue manager on startup"""
-    # Set the WebSocket manager reference for job queue notifications
-    job_queue_manager.set_websocket_manager(manager)
-    await job_queue_manager.start()
-    logger.info("Meeting ASR Multi-User System started successfully")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up resources on shutdown"""
-    await job_queue_manager.stop()
-    logger.info("Meeting ASR Multi-User System shut down")
 
 # Add CORS middleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -621,6 +638,11 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         # Clean up converted file if it was created (temporary conversion file)
         if converted_file and os.path.exists(converted_file) and converted_file != filepath: 
             os.remove(converted_file)
+
+# Register the audio processing handler with the job queue so queued tasks use FunASR.
+job_queue_manager.set_processing_handler(
+    lambda job_id, file_path, session_factory: process_audio_file(job_id, file_path, session_factory)
+)
 
 @app.post("/upload", response_model=schemas.Job)
 async def upload_file(
@@ -1171,15 +1193,14 @@ class UpdateSummaryRequest(BaseModel):
     summary: str
 
 class TranscriptSegmentUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: int | None = None
     text: str
     speaker: str | None = None
     start_time: float | None = Field(default=None, alias="startTime")
     end_time: float | None = Field(default=None, alias="endTime")
     do_not_merge_with_previous: bool | None = Field(default=None, alias="doNotMergeWithPrevious")
-
-    class Config:
-        allow_population_by_field_name = True
 
 class TranscriptUpdateRequest(BaseModel):
     transcript: List[TranscriptSegmentUpdate]
@@ -1189,11 +1210,10 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     messages: List[ChatMessage]
     system_prompt: str | None = Field(default=None, alias="systemPrompt")
-
-    class Config:
-        allow_population_by_field_name = True
 
 class ChatResponse(BaseModel):
     reply: str

@@ -26,7 +26,7 @@
 
 ### 多用户支持
 - **用户隔离**：每个用户只能访问自己的作业和数据
-- **并发限制**：每用户最多2个并发作业，系统最多3个作业同时处理
+- **并发限制**：默认每用户最多 2 个并发作业、系统最多 3 个作业同时处理，可通过环境变量灵活配置
 - **实时队列状态**：查看作业在队列中的位置和预计等待时间
 - **作业取消**：可取消尚未开始处理的作业
 
@@ -204,14 +204,50 @@ python create_super_admin.py
 创建 `backend/.env` 文件：
 
 ```env
-# JWT 配置
+# OpenAI 大语言模型配置
+OPENAI_API_KEY="your-openai-api-key-here"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_MODEL_NAME="gpt-4.1-mini"
+
+# 或者使用自定义LLM服务（如本地部署）
+# OPENAI_BASE_URL="http://your-llm-server:8000/v1"
+# OPENAI_MODEL_NAME="your-model-name"
+
+# JWT 认证配置
 SECRET_KEY=your-super-secret-key-here-change-in-production
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 
-# 可选配置
+# Hugging Face 配置（用于语音识别模型）
+HF_TOKEN="your-huggingface-token-here"
 HF_ENDPOINT=https://hf-mirror.com
+
+# 数据库配置
+DATABASE_URL=sqlite:///./sqlite.db
+
+# 生产环境配置
+CORS_ORIGINS=http://localhost:3000,http://your-domain:3000
+DEBUG=false
 ```
+
+#### 🔑 获取 API 密钥
+
+1. **OpenAI API 密钥**
+   - 访问 [OpenAI API](https://platform.openai.com/api-keys)
+   - 创建账户并获取 API 密钥
+   - 将密钥填入 `OPENAI_API_KEY`
+
+2. **Hugging Face Token**
+   - 访问 [Hugging Face](https://huggingface.co/settings/tokens)
+   - 创建账户并生成访问令牌
+   - 将令牌填入 `HF_TOKEN`
+
+3. **JWT 密钥**
+   - 生成安全的随机字符串：
+   ```bash
+   openssl rand -hex 32
+   ```
+   - 将生成的字符串填入 `SECRET_KEY`
 
 ## 👤 管理员设置
 
@@ -440,7 +476,14 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 # 可选配置
 CORS_ORIGINS=https://yourdomain.com
 DEBUG=false
+
+# 队列并发控制（可选，默认为 3/50/2）
+JOB_QUEUE_MAX_CONCURRENT=3     # 同时处理的最大作业数
+JOB_QUEUE_MAX_SIZE=50          # 队列最大等待任务数
+JOB_QUEUE_MAX_PER_USER=2       # 单个用户允许的并发任务数
 ```
+
+> 提示：修改上述队列配置后需要重启后端服务，新的并发限制才会生效。
 
 ## 🔍 故障排除
 

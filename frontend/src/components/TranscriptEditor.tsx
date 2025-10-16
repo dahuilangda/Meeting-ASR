@@ -33,7 +33,23 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   const [currentSpeakerPlaying, setCurrentSpeakerPlaying] = useState<number | null>(null);
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
   const [editingSpeakerForSegment, setEditingSpeakerForSegment] = useState<number | null>(null); // Track which segment is being edited
+  const [openDropdownForSegment, setOpenDropdownForSegment] = useState<number | null>(null); // Track which segment's dropdown is open
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const speakerColorPalette = React.useMemo(
+    () => [
+      { bg: '#e3f2fd', border: '#bbdefb' },
+      { bg: '#f3e5f5', border: '#e1bee7' },
+      { bg: '#e8f5e8', border: '#c8e6c9' },
+      { bg: '#fff3e0', border: '#ffe0b2' },
+      { bg: '#fce4ec', border: '#f8bbd0' },
+      { bg: '#f1f8e9', border: '#dcedc8' },
+      { bg: '#e0f7fa', border: '#b2ebf2' },
+      { bg: '#fff8e1', border: '#fff59d' }
+    ],
+    []
+  );
+  const colorIndexRef = useRef(0);
+  const [speakerColorMap, setSpeakerColorMap] = useState<Record<string, { bg: string; border: string }>>({});
 
   const formatTime = (seconds: number): string => {
     // Handle invalid or missing time values
@@ -60,6 +76,21 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       }, 0);
     }
   }, [editingSpeakerForSegment]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.dropdown')) {
+        setOpenDropdownForSegment(null);
+      }
+    };
+
+    if (openDropdownForSegment !== null) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [openDropdownForSegment]);
   
   const buildTranscriptPayload = (updatedSegments: TranscriptSegment[]) => {
     return {
@@ -96,6 +127,26 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   }, [jobId, onTranscriptUpdate]);
 
   const handleSpeakerNameChange = (oldName: string, newName: string) => {
+    setSpeakerColorMap(prev => {
+      if (oldName === newName) {
+        return prev;
+      }
+      const next: Record<string, { bg: string; border: string }> = { ...prev };
+      if (next[oldName]) {
+        const preservedColor = next[oldName];
+        delete next[oldName];
+        if (!next[newName]) {
+          next[newName] = preservedColor;
+        }
+        return next;
+      }
+      if (!next[newName]) {
+        next[newName] = speakerColorPalette[colorIndexRef.current % speakerColorPalette.length];
+        colorIndexRef.current += 1;
+      }
+      return next;
+    });
+
     // Find the original speaker name of the group currently being edited
     // When a user renames a speaker, they want to rename all segments with that speaker name
     const updatedSegments = segments.map(segment => {
@@ -108,9 +159,20 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     setSegments(updatedSegments);
     setHasChanges(true);
     setEditingSpeakerForSegment(null);
+    setOpenDropdownForSegment(null);
   };
 
   const handleSegmentSpeakerChange = (segmentIds: number[], newName: string) => {
+    setSpeakerColorMap(prev => {
+      if (prev[newName]) {
+        return prev;
+      }
+      const next: Record<string, { bg: string; border: string }> = { ...prev };
+      next[newName] = speakerColorPalette[colorIndexRef.current % speakerColorPalette.length];
+      colorIndexRef.current += 1;
+      return next;
+    });
+
     const updatedSegments = segments.map(segment => {
       if (segmentIds.includes(segment.id)) {
         // When changing speaker via dropdown, preserve existing doNotMergeWithPrevious value
@@ -236,6 +298,31 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   };
 
   const uniqueSpeakers = [...new Set(segments.map(segment => segment.speaker))];
+
+  useEffect(() => {
+    const currentSpeakers = Array.from(new Set(segments.map(segment => segment.speaker)));
+    setSpeakerColorMap(prev => {
+      const next: Record<string, { bg: string; border: string }> = { ...prev };
+      let mutated = false;
+
+      currentSpeakers.forEach(speaker => {
+        if (!next[speaker]) {
+          next[speaker] = speakerColorPalette[colorIndexRef.current % speakerColorPalette.length];
+          colorIndexRef.current += 1;
+          mutated = true;
+        }
+      });
+
+      Object.keys(next).forEach(key => {
+        if (!currentSpeakers.includes(key)) {
+          delete next[key];
+          mutated = true;
+        }
+      });
+
+      return mutated ? next : prev;
+    });
+  }, [segments, speakerColorPalette]);
 
   
   // Group consecutive segments by the same speaker for better presentation
@@ -675,8 +762,9 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             return colors[index];
           };
 
-          const bgColor = getSpeakerColor(group.speaker);
-          const borderColor = getSpeakerBorderColor(group.speaker);
+          const assignedColors = speakerColorMap[group.speaker];
+          const bgColor = assignedColors?.bg ?? getSpeakerColor(group.speaker);
+          const borderColor = assignedColors?.border ?? getSpeakerBorderColor(group.speaker);
           const isCurrentlyPlaying = currentSpeakerPlaying === group.id;
           const isEditing = editingSegmentId === group.id;
 
@@ -684,6 +772,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           // highlightedSegments are 1-based indices (from transcript segments)
           // group.index + 1 should match the refIndex since groups are rendered in order
           const isHighlighted = highlightedSegments.some(refIndex => (index + 1) === refIndex);
+          const isDropdownOpen = openDropdownForSegment === group.id;
 
           return (
             <div
@@ -697,10 +786,10 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                 borderLeftColor: isHighlighted ? '#ffc107' : borderColor,
                 borderWidth: isHighlighted ? '2px' : '1px',
                 boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : (isHighlighted ? '0 4px 12px rgba(255,193,7,0.4)' : 'none'),
-                transform: isHighlighted ? 'translateX(4px) scale(1.02)' : 'translateX(0)',
+                transform: isHighlighted ? 'translateX(4px) scale(1.02)' : undefined,
                 transition: 'all 0.3s ease',
                 position: 'relative',
-                zIndex: isHighlighted ? 10 : (editingSpeakerForSegment === group.id ? 15 : 1),
+                zIndex: isDropdownOpen ? 2000 : (isHighlighted ? 10 : (editingSpeakerForSegment === group.id ? 15 : 1)),
                 overflow: 'visible'
               }}
             >
@@ -725,6 +814,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                             handleSpeakerNameChange(group.speaker, (e.target as HTMLInputElement).value);
                           } else if (e.key === 'Escape') {
                             setEditingSpeakerForSegment(null);
+                            setOpenDropdownForSegment(null);
                           }
                         }}
                         onBlur={(e) => {
@@ -746,37 +836,38 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <div className="dropdown position-relative" style={{zIndex: 1000}}>
+                    <div className="dropdown position-relative" style={{zIndex: 1050}}>
                       <button
                         className="btn btn-sm dropdown-toggle py-0"
                         type="button"
-                        data-bs-toggle="dropdown"
-                        aria-expanded="false"
+                        onClick={() => setOpenDropdownForSegment(openDropdownForSegment === group.id ? null : group.id)}
+                        aria-expanded={openDropdownForSegment === group.id}
                         style={{
                           backgroundColor: borderColor,
                           color: '#000',
                           fontSize: '0.8rem',
                           padding: '2px 8px',
                           position: 'relative',
-                          zIndex: 1001
+                          zIndex: 1051
                         }}
                       >
                         {group.speaker}
                       </button>
-                      <ul
-                        className="dropdown-menu show"
-                        style={{
-                          zIndex: 1060,
-                          position: 'absolute',
-                          transform: 'translateY(2px)',
-                          minWidth: '120px',
-                          marginTop: '0.25rem',
-                          boxShadow: '0 0.5rem 1rem rgba(0, 0, 0, 0.15)',
-                          border: '1px solid rgba(0, 0, 0, 0.15)',
-                          borderRadius: '0.375rem',
-                          padding: '0.5rem 0'
-                        }}
-                      >
+                      {openDropdownForSegment === group.id && (
+                        <ul
+                          className="dropdown-menu show"
+                          style={{
+                            zIndex: 1080,
+                            position: 'absolute',
+                            transform: 'translateY(2px)',
+                            minWidth: '120px',
+                            marginTop: '0.25rem',
+                            boxShadow: '0 0.5rem 1rem rgba(0, 0, 0, 0.15)',
+                            border: '1px solid rgba(0, 0, 0, 0.15)',
+                            borderRadius: '0.375rem',
+                            padding: '0.5rem 0'
+                          }}
+                        >
                         {uniqueSpeakers.map(speaker => (
                           <li key={speaker}>
                             <button
@@ -784,6 +875,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker);
+                                setOpenDropdownForSegment(null);
                               }}
                               style={{
                                 padding: '0.25rem 1rem',
@@ -803,6 +895,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                               e.preventDefault();
                               e.stopPropagation();
                               setEditingSpeakerForSegment(group.id);
+                              setOpenDropdownForSegment(null);
                             }}
                             style={{
                               padding: '0.25rem 1rem',
@@ -815,6 +908,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           </button>
                         </li>
                       </ul>
+                      )}
                     </div>
                   )}
                 </div>
