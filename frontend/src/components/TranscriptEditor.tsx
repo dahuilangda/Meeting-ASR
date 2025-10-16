@@ -483,7 +483,30 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             }
           }
           .dropdown-menu {
-            z-index: 9999 !important;
+            z-index: 1060 !important;
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15) !important;
+            border: 1px solid rgba(0, 0, 0, 0.15) !important;
+            border-radius: 0.375rem !important;
+          }
+          .transcript-segment {
+            overflow: visible !important;
+          }
+          .dropdown-toggle {
+            position: relative !important;
+            z-index: 1000 !important;
+          }
+          /* Ensure dropdown appears above all segments */
+          .dropdown.open .dropdown-menu {
+            z-index: 1070 !important;
+          }
+          /* Fix dropdown item hover states */
+          .dropdown-item:hover {
+            background-color: #f8f9fa !important;
+          }
+          /* Better focus states for accessibility */
+          .dropdown-item:focus {
+            outline: 2px solid #80bdff !important;
+            outline-offset: -2px !important;
           }
         `}
       </style>
@@ -610,7 +633,13 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
         </div>
       )}
 
-      <div className="transcript-container" style={{ height: 'calc(75vh - 60px)', overflowY: 'auto', padding: '1rem' }}>
+      <div className="transcript-container" style={{
+        height: 'calc(75vh - 60px)',
+        overflowY: 'auto',
+        overflowX: 'visible',
+        padding: '1rem',
+        position: 'relative'
+      }}>
         {segments.length === 0 ? (
           <div className="text-center text-muted p-4">
             <div className="spinner-border spinner-border-sm me-2"></div>
@@ -671,7 +700,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                 transform: isHighlighted ? 'translateX(4px) scale(1.02)' : 'translateX(0)',
                 transition: 'all 0.3s ease',
                 position: 'relative',
-                zIndex: isHighlighted ? 10 : 1
+                zIndex: isHighlighted ? 10 : (editingSpeakerForSegment === group.id ? 15 : 1),
+                overflow: 'visible'
               }}
             >
               <div className="segment-header d-flex justify-content-between align-items-center mb-2">
@@ -716,7 +746,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <div className="dropdown">
+                    <div className="dropdown position-relative" style={{zIndex: 1000}}>
                       <button
                         className="btn btn-sm dropdown-toggle py-0"
                         type="button"
@@ -726,12 +756,27 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                           backgroundColor: borderColor,
                           color: '#000',
                           fontSize: '0.8rem',
-                          padding: '2px 8px'
+                          padding: '2px 8px',
+                          position: 'relative',
+                          zIndex: 1001
                         }}
                       >
                         {group.speaker}
                       </button>
-                      <ul className="dropdown-menu" style={{zIndex: '9999'}}>
+                      <ul
+                        className="dropdown-menu show"
+                        style={{
+                          zIndex: 1060,
+                          position: 'absolute',
+                          transform: 'translateY(2px)',
+                          minWidth: '120px',
+                          marginTop: '0.25rem',
+                          boxShadow: '0 0.5rem 1rem rgba(0, 0, 0, 0.15)',
+                          border: '1px solid rgba(0, 0, 0, 0.15)',
+                          borderRadius: '0.375rem',
+                          padding: '0.5rem 0'
+                        }}
+                      >
                         {uniqueSpeakers.map(speaker => (
                           <li key={speaker}>
                             <button
@@ -740,12 +785,17 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                                 e.stopPropagation();
                                 handleSegmentSpeakerChange(group.originalSegments.map(s => s.id), speaker);
                               }}
+                              style={{
+                                padding: '0.25rem 1rem',
+                                fontSize: '0.875rem',
+                                whiteSpace: 'nowrap'
+                              }}
                             >
                               {speaker}
                             </button>
                           </li>
                         ))}
-                        <li><hr className="dropdown-divider" /></li>
+                        <li><hr className="dropdown-divider" style={{margin: '0.25rem 0'}} /></li>
                         <li>
                           <button
                             className="dropdown-item"
@@ -753,6 +803,12 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                               e.preventDefault();
                               e.stopPropagation();
                               setEditingSpeakerForSegment(group.id);
+                            }}
+                            style={{
+                              padding: '0.25rem 1rem',
+                              fontSize: '0.875rem',
+                              whiteSpace: 'nowrap',
+                              fontWeight: '500'
                             }}
                           >
                             Rename

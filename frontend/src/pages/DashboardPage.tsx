@@ -2,13 +2,31 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiClient } from '../api';
 import { getCurrentUser, User } from '../api/user';
-import { Navbar, Nav, Dropdown, Badge } from 'react-bootstrap';
+import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
+import { JobWebSocketClient, WebSocketMessage } from '../websocket';
 
 interface Job {
     id: number;
     filename: string;
     status: string;
     created_at: string;
+    progress?: number;
+    error_message?: string;
+    processing_time?: number;
+    file_size?: number;
+}
+
+interface QueueStatus {
+    active_jobs: number;
+    queued_jobs: number;
+    total_queue_size: number;
+    jobs: Array<{
+        job_id: number;
+        status: string;
+        progress: number;
+        error_message?: string;
+        queue_position?: number;
+    }>;
 }
 
 function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }) {
@@ -39,8 +57,16 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
             });
             onUploadSuccess(response.data as Job);
             setFile(null); // Reset file input
-        } catch (err) {
-            setError('File upload failed. Please try again.');
+        } catch (err: any) {
+            if (err.response?.status === 429) {
+                setError('Too many concurrent jobs. Please wait for current jobs to complete.');
+            } else if (err.response?.status === 413) {
+                setError('File too large. Maximum size is 200MB.');
+            } else if (err.response?.status === 503) {
+                setError('Job queue is full. Please try again later.');
+            } else {
+                setError(err.response?.data?.detail || 'File upload failed. Please try again.');
+            }
         } finally {
             setIsUploading(false);
         }
@@ -67,8 +93,11 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
 export function DashboardPage() {
     const [jobs, setJobs] = useState<Job[]>([]);
     const [error, setError] = useState('');
-    const [isUploading, setIsUploading] = useState(false); // Track if any operation is happening
+    const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
+    const [wsNotification, setWsNotification] = useState<string>('');
+    const [isUploading, setIsUploading] = useState(false);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
     const navigate = useNavigate();
 
     const fetchJobs = () => {
@@ -98,11 +127,80 @@ export function DashboardPage() {
         }
     };
 
+    const handleCancelJob = async (jobId: number) => {
+        try {
+            await apiClient.post(`/jobs/${jobId}/cancel`);
+            setJobs(jobs.filter(job => job.id !== jobId));
+            setError('');
+        } catch (err: any) {
+            setError(err.response?.data?.detail || 'Failed to cancel the job. Please try again.');
+        }
+    };
+
     useEffect(() => {
         fetchJobs();
-        const interval = setInterval(fetchJobs, 5000); // Poll for status updates every 5 seconds
+        const interval = setInterval(fetchJobs, 10000); // Reduced polling frequency since we have WebSocket
         return () => clearInterval(interval);
     }, []);
+
+    // Initialize WebSocket connection
+    useEffect(() => {
+        if (currentUser) {
+            try {
+                const client = JobWebSocketClient.fromLocalStorage();
+
+                client.onMessage((message: WebSocketMessage) => {
+                    console.log('WebSocket message:', message);
+
+                    // Show notification
+                    if (message.message) {
+                        setWsNotification(message.message);
+                        setTimeout(() => setWsNotification(''), 5000);
+                    }
+
+                    // Update jobs list
+                    if (message.job_id) {
+                        fetchJobs();
+                    }
+                });
+
+                client.onStatusChange((jobId: number, status: string, progress: number) => {
+                    // Update specific job in the list
+                    setJobs(prevJobs =>
+                        prevJobs.map(job =>
+                            job.id === jobId
+                                ? { ...job, status, progress: progress || 0 }
+                                : job
+                        )
+                    );
+                });
+
+                client.onError((error: string) => {
+                    setError(error);
+                });
+
+                client.connect().then(() => {
+                    setWsClient(client);
+                    console.log('WebSocket connected successfully');
+                }).catch(error => {
+                    console.error('Failed to connect WebSocket:', error);
+                });
+
+                // Fetch queue status
+                apiClient.get('/queue/status').then(response => {
+                    setQueueStatus(response.data as QueueStatus);
+                }).catch(err => {
+                    console.error('Failed to fetch queue status:', err);
+                });
+
+                return () => {
+                    client.disconnect();
+                };
+            } catch (error) {
+                console.error('Failed to create WebSocket client:', error);
+            }
+        }
+    }, [currentUser]);
 
     useEffect(() => {
         const loadUser = async () => {
@@ -189,13 +287,51 @@ export function DashboardPage() {
 
             <div className="container mt-4">
                 <h1 className="mb-4">Dashboard</h1>
-            
-            <UploadForm onUploadSuccess={handleUploadSuccess} />
 
-            <div className="card">
-                <div className="card-header"><h5>My Jobs</h5></div>
-                <div className="card-body">
-                    {error && <div className="alert alert-danger">{error}</div>}
+                {/* WebSocket Notifications */}
+                {wsNotification && (
+                    <Alert variant="success" className="mb-3" dismissible onClose={() => setWsNotification('')}>
+                        {wsNotification}
+                    </Alert>
+                )}
+
+                <UploadForm onUploadSuccess={handleUploadSuccess} />
+
+                {/* Queue Status Display */}
+                {queueStatus && (queueStatus.active_jobs > 0 || queueStatus.queued_jobs > 0) && (
+                    <div className="card mb-4">
+                        <div className="card-header">
+                            <h6 className="mb-0">
+                                <i className="bi bi-clock me-2"></i>
+                                Queue Status
+                                {wsClient && (
+                                    <Badge bg="success" className="ms-2">Live</Badge>
+                                )}
+                            </h6>
+                        </div>
+                        <div className="card-body py-2">
+                            <div className="row">
+                                <div className="col-md-4">
+                                    <small className="text-muted">Active Jobs</small>
+                                    <div className="fw-bold">{queueStatus.active_jobs}</div>
+                                </div>
+                                <div className="col-md-4">
+                                    <small className="text-muted">Queued Jobs</small>
+                                    <div className="fw-bold">{queueStatus.queued_jobs}</div>
+                                </div>
+                                <div className="col-md-4">
+                                    <small className="text-muted">Total in Queue</small>
+                                    <div className="fw-bold">{queueStatus.total_queue_size}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="card">
+                    <div className="card-header"><h5>My Jobs</h5></div>
+                    <div className="card-body">
+                        {error && <div className="alert alert-danger">{error}</div>}
                     <table className="table table-hover">
                         <thead>
                             <tr>
@@ -210,16 +346,36 @@ export function DashboardPage() {
                                 <tr key={job.id}>
                                     <td>{job.filename}</td>
                                     <td>
-                                        <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : 'warning')}`}>
-                                            {job.status}
-                                        </span>
+                                        <div className="d-flex align-items-center">
+                                            <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : (job.status === 'processing' ? 'primary' : 'warning'))} me-2`}>
+                                                {job.status === 'queued' ? 'Queued' : job.status === 'processing' ? 'Processing' : job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Failed' : job.status}
+                                            </span>
+                                            {job.status === 'processing' && job.progress !== undefined && (
+                                                <small className="text-muted">{Math.round(job.progress)}%</small>
+                                            )}
+                                        </div>
+                                        {job.status === 'processing' && job.progress !== undefined && (
+                                            <ProgressBar now={job.progress} className="mt-1" style={{ height: '4px' }} />
+                                        )}
+                                        {job.error_message && (
+                                            <small className="text-danger d-block mt-1">{job.error_message}</small>
+                                        )}
                                     </td>
                                     <td>{new Date(job.created_at).toLocaleString()}</td>
                                     <td>
                                         <Link to={`/jobs/${job.id}`} className={`btn btn-sm btn-info me-2 ${job.status !== 'completed' ? 'disabled' : ''}`}>
                                             View Result
                                         </Link>
-                                        <button 
+                                        {job.status === 'queued' && (
+                                            <button
+                                                className="btn btn-sm btn-warning me-2"
+                                                onClick={() => handleCancelJob(job.id)}
+                                                disabled={isUploading}
+                                            >
+                                                Cancel
+                                            </button>
+                                        )}
+                                        <button
                                             className="btn btn-sm btn-danger"
                                             onClick={() => handleDeleteJob(job.id)}
                                             disabled={isUploading}

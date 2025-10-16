@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean, Enum
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean, Enum, Float
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
@@ -24,17 +24,31 @@ class User(Base):
 
     jobs = relationship("Job", back_populates="owner")
 
+class JobStatus(enum.Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String)
-    status = Column(String, default="processing") # processing, completed, failed
+    status = Column(Enum(JobStatus), default=JobStatus.QUEUED)
     transcript = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
-    # Additional field to store timing and speaker information 
+    file_path = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    processing_time = Column(Float, nullable=True)  # in seconds
+    error_message = Column(Text, nullable=True)
+    progress = Column(Float, default=0.0)  # 0.0 to 1.0
+    # Additional field to store timing and speaker information
     timing_info = Column(Text, nullable=True)  # JSON string containing timing information
 
     owner = relationship("User", back_populates="jobs")

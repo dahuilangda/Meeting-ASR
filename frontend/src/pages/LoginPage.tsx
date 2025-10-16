@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+import { apiClient } from '../api';
 
 export function LoginPage() {
     const [username, setUsername] = useState('');
@@ -16,7 +14,7 @@ export function LoginPage() {
             formData.append('username', username);
             formData.append('password', password);
 
-            const response = await axios.post(`${API_URL}/token`, formData, {
+            const response = await apiClient.post('/token', formData, {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             });
             

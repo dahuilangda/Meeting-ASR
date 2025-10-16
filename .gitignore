@@ -1,11 +1,61 @@
-backend/__pycache__/
-backend/backend/
-backend/database/__pycache__/
-backend/sqlite.db
-frontend/.env
-frontend/.gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
 sqlite.db
-.gitignore
-backend/uploads/
-backend/venv/
-backend/.deps_installed
+
+# Uploads
+uploads/
+temp/
+logs/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# React
+/frontend/.env
+/frontend/.env.local
+/frontend/.env.development.local
+/frontend/.env.test.local
+/frontend/.env.production.local
+
+# Build outputs
+/frontend/build
+/frontend/dist
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Dependency markers
+.deps_installed
+backend/sqlite.db.backup.20251016_152923

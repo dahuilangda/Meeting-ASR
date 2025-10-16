@@ -1,0 +1,196 @@
+/**
+ * WebSocket client for real-time job status updates
+ */
+import { useState, useEffect } from 'react';
+
+export interface WebSocketMessage {
+  type: string;
+  job_id?: number;
+  filename?: string;
+  status?: string;
+  progress?: number;
+  error?: string;
+  message?: string;
+  queue_position?: number;
+}
+
+export interface JobStatusUpdate {
+  job_id: number;
+  status: string;
+  progress: number;
+  error_message?: string;
+  queue_position?: number;
+}
+
+export class JobWebSocketClient {
+  private ws: WebSocket | null = null;
+  private token: string;
+  private baseUrl: string;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelay = 1000;
+  private isConnecting = false;
+  private onMessageCallback?: (message: WebSocketMessage) => void;
+  private onStatusChangeCallback?: (jobId: number, status: string, progress: number) => void;
+  private onErrorCallback?: (error: string) => void;
+
+  constructor(token: string, baseUrl: string = "ws://localhost:8000") {
+    this.token = token;
+    this.baseUrl = baseUrl;
+  }
+
+  connect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) {
+        resolve();
+        return;
+      }
+
+      this.isConnecting = true;
+
+      try {
+        const wsUrl = `${this.baseUrl}/ws/${this.token}`;
+        console.log('Connecting to WebSocket:', wsUrl);
+
+        this.ws = new WebSocket(wsUrl);
+
+        this.ws.onopen = () => {
+          console.log('WebSocket connected');
+          this.isConnecting = false;
+          this.reconnectAttempts = 0;
+          resolve();
+        };
+
+        this.ws.onmessage = (event) => {
+          try {
+            const message: WebSocketMessage = JSON.parse(event.data);
+            console.log('WebSocket message received:', message);
+
+            // Call general message callback
+            if (this.onMessageCallback) {
+              this.onMessageCallback(message);
+            }
+
+            // Call specific status change callback
+            if (message.job_id && message.status !== undefined) {
+              if (this.onStatusChangeCallback) {
+                this.onStatusChangeCallback(
+                  message.job_id,
+                  message.status,
+                  message.progress || 0
+                );
+              }
+            }
+
+            // Handle error messages
+            if (message.type === 'error' && this.onErrorCallback) {
+              this.onErrorCallback(message.message || 'Unknown error');
+            }
+
+          } catch (error) {
+            console.error('Failed to parse WebSocket message:', error);
+          }
+        };
+
+        this.ws.onclose = (event) => {
+          console.log('WebSocket disconnected:', event.code, event.reason);
+          this.isConnecting = false;
+          this.ws = null;
+
+          // Attempt to reconnect if not a normal closure
+          if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.scheduleReconnect();
+          }
+        };
+
+        this.ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          this.isConnecting = false;
+          reject(error);
+        };
+
+      } catch (error) {
+        this.isConnecting = false;
+        reject(error);
+      }
+    });
+  }
+
+  private scheduleReconnect() {
+    this.reconnectAttempts++;
+    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+
+    console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+    setTimeout(() => {
+      this.connect().catch(error => {
+        console.error('Reconnection failed:', error);
+      });
+    }, delay);
+  }
+
+  disconnect() {
+    if (this.ws) {
+      this.ws.close(1000, 'Client disconnect');
+      this.ws = null;
+    }
+  }
+
+  isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  // Event handlers
+  onMessage(callback: (message: WebSocketMessage) => void) {
+    this.onMessageCallback = callback;
+  }
+
+  onStatusChange(callback: (jobId: number, status: string, progress: number) => void) {
+    this.onStatusChangeCallback = callback;
+  }
+
+  onError(callback: (error: string) => void) {
+    this.onErrorCallback = callback;
+  }
+
+  // Static method to create client from localStorage token
+  static fromLocalStorage(baseUrl?: string): JobWebSocketClient {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      throw new Error('No authentication token found in localStorage');
+    }
+    return new JobWebSocketClient(token, baseUrl);
+  }
+}
+
+// Hook for React components
+export const useJobWebSocket = () => {
+  const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    try {
+      const client = JobWebSocketClient.fromLocalStorage();
+
+      client.onStatusChange((jobId, status, progress) => {
+        // This will be handled by the component using the hook
+        console.log(`Job ${jobId} status changed to ${status} (${progress}%)`);
+      });
+
+      client.connect().then(() => {
+        setWsClient(client);
+        setIsConnected(true);
+      }).catch(error => {
+        console.error('Failed to connect WebSocket:', error);
+      });
+
+      return () => {
+        client.disconnect();
+      };
+    } catch (error) {
+      console.error('Failed to create WebSocket client:', error);
+    }
+  }, []);
+
+  return { wsClient, isConnected };
+};

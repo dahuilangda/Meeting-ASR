@@ -8,18 +8,53 @@ class UserRole(str, Enum):
     ADMIN = "admin"
     SUPER_ADMIN = "super_admin"
 
+class JobStatusEnum(str, Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 class JobBase(BaseModel):
-    id: int
     filename: str
-    status: str
-    created_at: datetime.datetime
+
+class JobCreate(JobBase):
+    pass
+
+class JobUpdate(BaseModel):
+    summary: Optional[str] = None
 
 class Job(JobBase):
-    transcript: Optional[str]
-    timing_info: Optional[str]  # JSON string containing timing information
-    summary: Optional[str]  # Summary field added
+    id: int
+    status: JobStatusEnum
+    created_at: datetime.datetime
+    started_at: Optional[datetime.datetime] = None
+    completed_at: Optional[datetime.datetime] = None
+    owner_id: int
+    file_path: Optional[str] = None
+    file_size: Optional[int] = None
+    processing_time: Optional[float] = None
+    error_message: Optional[str] = None
+    progress: float = 0.0
+    transcript: Optional[str] = None
+    timing_info: Optional[str] = None
+    summary: Optional[str] = None
+
     class Config:
         from_attributes = True
+
+class JobStatusUpdate(BaseModel):
+    job_id: int
+    status: JobStatusEnum
+    progress: float = 0.0
+    error_message: Optional[str] = None
+    queue_position: Optional[int] = None
+
+class QueueStatus(BaseModel):
+    active_jobs: int
+    queued_jobs: int
+    total_queue_size: int
+    jobs: List[JobStatusUpdate]
 
 class UserBase(BaseModel):
     username: str

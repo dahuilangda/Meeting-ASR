@@ -94,8 +94,14 @@ def activate_user(db: Session, user_id: int):
 
 # --- Job CRUD ---
 
-def create_job(db: Session, filename: str, owner_id: int) -> models.Job:
-    db_job = models.Job(filename=filename, owner_id=owner_id, status="processing")
+def create_job(db: Session, filename: str, owner_id: int, file_path: str = None, file_size: int = None) -> models.Job:
+    db_job = models.Job(
+        filename=filename,
+        owner_id=owner_id,
+        status=models.JobStatus.QUEUED,
+        file_path=file_path,
+        file_size=file_size
+    )
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
@@ -107,11 +113,22 @@ def get_jobs_by_owner(db: Session, owner_id: int):
 def get_job(db: Session, job_id: int, owner_id: int) -> models.Job | None:
     return db.query(models.Job).filter(models.Job.id == job_id, models.Job.owner_id == owner_id).first()
 
-def update_job_status(db: Session, job_id: int, status: str):
+def update_job_status(db: Session, job_id: int, status: models.JobStatus, started_at: datetime.datetime = None, completed_at: datetime.datetime = None, error_message: str = None):
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if db_job:
         db_job.status = status
+        if started_at:
+            db_job.started_at = started_at
+        if completed_at:
+            db_job.completed_at = completed_at
+            if db_job.started_at:
+                db_job.processing_time = (completed_at - db_job.started_at).total_seconds()
+        if error_message:
+            db_job.error_message = error_message
         db.commit()
+        db.refresh(db_job)
+        return db_job
+    return None
 
 def update_job_transcript(db: Session, job_id: int, transcript: str, timing_info: str = None):
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
@@ -119,7 +136,10 @@ def update_job_transcript(db: Session, job_id: int, transcript: str, timing_info
         db_job.transcript = transcript
         if timing_info is not None:
             db_job.timing_info = timing_info
-        db_job.status = "completed"
+        db_job.status = models.JobStatus.COMPLETED
+        db_job.completed_at = datetime.datetime.utcnow()
+        if db_job.started_at:
+            db_job.processing_time = (db_job.completed_at - db_job.started_at).total_seconds()
         db.commit()
         db.refresh(db_job)  # Refresh to get updated values
         return db_job
@@ -145,3 +165,37 @@ def update_job_summary(db: Session, job_id: int, summary: str):
     if db_job:
         db_job.summary = summary
         db.commit()
+        db.refresh(db_job)
+        return db_job
+    return None
+
+def update_job_progress(db: Session, job_id: int, progress: float):
+    """Update job progress (0.0 to 100.0)"""
+    db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if db_job:
+        db_job.progress = max(0.0, min(100.0, progress))
+        db.commit()
+        return db_job
+    return None
+
+def get_job_with_progress(db: Session, job_id: int, owner_id: int) -> models.Job | None:
+    """Get job with progress information"""
+    return db.query(models.Job).filter(
+        models.Job.id == job_id,
+        models.Job.owner_id == owner_id
+    ).first()
+
+def get_all_jobs(db: Session, skip: int = 0, limit: int = 100):
+    """Get all jobs (for admin)"""
+    return db.query(models.Job).order_by(models.Job.created_at.desc()).offset(skip).limit(limit).all()
+
+def get_jobs_by_status(db: Session, status: models.JobStatus):
+    """Get jobs by status"""
+    return db.query(models.Job).filter(models.Job.status == status).all()
+
+def get_user_active_jobs_count(db: Session, user_id: int):
+    """Get count of active jobs for a user"""
+    return db.query(models.Job).filter(
+        models.Job.owner_id == user_id,
+        models.Job.status.in_([models.JobStatus.QUEUED, models.JobStatus.PROCESSING])
+    ).count()

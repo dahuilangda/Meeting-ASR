@@ -1,11 +1,13 @@
-from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, BackgroundTasks
+from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict, Optional
 import shutil
 import os
 import json
 import re
+import asyncio
+import logging
 from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -14,6 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from database import crud, models, schemas
 from database.database import SessionLocal, engine
 import security
+from job_queue import job_queue_manager
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file FIRST
 load_dotenv()
@@ -23,7 +30,54 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 # --- App and DB Setup ---
 models.Base.metadata.create_all(bind=engine)
-app = FastAPI()
+app = FastAPI(title="Meeting ASR Multi-User System", version="2.0.0")
+
+# WebSocket connection manager for real-time updates
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[int, List[WebSocket]] = {}  # user_id -> list of connections
+
+    async def connect(self, websocket: WebSocket, user_id: int):
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
+        logger.info(f"User {user_id} connected via WebSocket")
+
+    def disconnect(self, websocket: WebSocket, user_id: int):
+        if user_id in self.active_connections:
+            self.active_connections[user_id].remove(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+        logger.info(f"User {user_id} disconnected from WebSocket")
+
+    async def send_personal_message(self, message: dict, user_id: int):
+        if user_id in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[user_id]:
+                try:
+                    await connection.send_json(message)
+                except:
+                    disconnected.append(connection)
+            # Remove dead connections
+            for conn in disconnected:
+                self.active_connections[user_id].remove(conn)
+
+manager = ConnectionManager()
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the job queue manager on startup"""
+    # Set the WebSocket manager reference for job queue notifications
+    job_queue_manager.set_websocket_manager(manager)
+    await job_queue_manager.start()
+    logger.info("Meeting ASR Multi-User System started successfully")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    await job_queue_manager.stop()
+    logger.info("Meeting ASR Multi-User System shut down")
 
 # Add CORS middleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -568,31 +622,172 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         if converted_file and os.path.exists(converted_file) and converted_file != filepath: 
             os.remove(converted_file)
 
-@app.post("/upload", response_model=schemas.JobBase)
-def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+@app.post("/upload", response_model=schemas.Job)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Upload file and add it to the processing queue"""
     upload_dir = "backend/uploads"
     os.makedirs(upload_dir, exist_ok=True)
-    
+
+    # Check file size (limit to 200MB)
+    file.file.seek(0, 2)  # Seek to end
+    file_size = file.file.tell()
+    file.file.seek(0)  # Reset position
+
+    if file_size > 200 * 1024 * 1024:  # 200MB
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File too large. Maximum size is 200MB."
+        )
+
+    # Check user's active job count
+    active_jobs_count = crud.get_user_active_jobs_count(db, current_user.id)
+    if active_jobs_count >= 2:  # Max 2 concurrent jobs per user
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many concurrent jobs. Please wait for current jobs to complete."
+        )
+
     # Handle potential filename conflicts by adding a counter if file exists
     original_filename = file.filename
     filename = original_filename
     counter = 1
-    
+
     filepath = os.path.join(upload_dir, filename)
     while os.path.exists(filepath):
         name, ext = os.path.splitext(original_filename)
         filename = f"{name}_{counter}{ext}"
         filepath = os.path.join(upload_dir, filename)
         counter += 1
-    
-    with open(filepath, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
-    job = crud.create_job(db, filename=filename, owner_id=current_user.id)
-    background_tasks.add_task(process_audio_file, job.id, filepath, SessionLocal)
+
+    # Save file
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Create job in database
+    job = crud.create_job(
+        db=db,
+        filename=filename,
+        owner_id=current_user.id,
+        file_path=filepath,
+        file_size=file_size
+    )
+
+    # Add job to queue
+    success = await job_queue_manager.add_job(
+        job_id=job.id,
+        user_id=current_user.id,
+        file_path=filepath,
+        filename=filename
+    )
+
+    if not success:
+        # If queue is full, delete the job and file
+        crud.delete_job(db, job.id)
+        os.remove(filepath)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Job queue is full. Please try again later."
+        )
+
+    # Notify user via WebSocket
+    await manager.send_personal_message({
+        "type": "job_uploaded",
+        "job_id": job.id,
+        "filename": filename,
+        "status": job.status.value,
+        "message": f"File '{filename}' uploaded successfully and added to processing queue"
+    }, current_user.id)
+
     return job
 
-@app.get("/jobs", response_model=List[schemas.JobBase])
+@app.get("/jobs", response_model=List[schemas.Job])
 def get_user_jobs(current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return crud.get_jobs_by_owner(db, owner_id=current_user.id)
+    """Get all jobs for the current user"""
+    jobs = crud.get_jobs_by_owner(db, owner_id=current_user.id)
+    # Load transcript from disk if available
+    for job in jobs:
+        hydrate_job_transcript_from_disk(job)
+    return jobs
+
+@app.get("/queue/status", response_model=schemas.QueueStatus)
+async def get_queue_status(current_user: schemas.User = Depends(get_current_user)):
+    """Get queue status for current user"""
+    status = await job_queue_manager.get_queue_status(current_user.id)
+    return schemas.QueueStatus(**status)
+
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(
+    job_id: int,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Cancel a job if it hasn't started processing"""
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status not in [models.JobStatus.QUEUED]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only cancel jobs that are queued"
+        )
+
+    success = await job_queue_manager.cancel_job(job_id, current_user.id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot cancel job - it may have already started processing"
+        )
+
+    await manager.send_personal_message({
+        "type": "job_cancelled",
+        "job_id": job_id,
+        "message": f"Job '{job.filename}' has been cancelled"
+    }, current_user.id)
+
+    return {"message": "Job cancelled successfully"}
+
+@app.websocket("/ws/{token}")
+async def websocket_endpoint(websocket: WebSocket, token: str):
+    """WebSocket endpoint for real-time job status updates"""
+    try:
+        # Verify token and get user
+        payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            await websocket.close(code=4001)
+            return
+
+        db = SessionLocal()
+        user = crud.get_user_by_username(db, username=username)
+        if not user or not user.is_active:
+            await websocket.close(code=4001)
+            return
+        db.close()
+
+        # Connect WebSocket
+        await manager.connect(websocket, user.id)
+
+        try:
+            while True:
+                # Keep connection alive and listen for client messages
+                data = await websocket.receive_text()
+                # Handle any client messages if needed (e.g., ping/pong)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            manager.disconnect(websocket, user.id)
+
+    except JWTError:
+        await websocket.close(code=4001)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        await websocket.close(code=4000)
 
 @app.get("/jobs/{job_id}", response_model=schemas.Job)
 def get_job_details(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
