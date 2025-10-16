@@ -339,10 +339,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         logger.info(f"[Job {job_id}] Running Pyannote diarization...")
         diarization = diarization_pipeline(converted_file)
 
-        # Debug: Print diarization object information
-        logger.debug(f"[Job {job_id}] Diarization object type: {type(diarization)}")
-        logger.debug(f"[Job {job_id}] Diarization attributes: {[attr for attr in dir(diarization) if not attr.startswith('_')]}")
-
+        
         # Get speaker timestamps - using new pyannote API
         speaker_segments = []
         try:
@@ -361,12 +358,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
 
         speaker_df = pd.DataFrame(speaker_segments, columns=['start', 'end', 'speaker'])
         
-        # DEBUG: Print detailed information about speaker segments
         logger.info(f"[Job {job_id}] Found {len(speaker_segments)} speaker segments: {set([s[2] for s in speaker_segments])}")
-        logger.debug(f"[Job {job_id}] First 5 speaker segments: {speaker_segments[:5] if len(speaker_segments) > 0 else 'None'}")
-        logger.debug(f"[Job {job_id}] Sample of speaker segments:")
-        for i, seg in enumerate(speaker_segments[:10]):  # Print first 10 segments as sample
-            logger.debug(f"  [{i}] {seg[0]:.2f}s-{seg[1]:.2f}s: {seg[2]} (duration: {seg[1]-seg[0]:.2f}s)")
         
         # Load the audio file to get its duration for alignment and segment processing
         audio_data, sample_rate = librosa.load(converted_file)
@@ -418,8 +410,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
             segment_duration = end_time - start_time
             total_coverage += segment_duration
             
-            logger.debug(f"[Job {job_id}] Processing speaker segment {i+1}/{len(speaker_segments)}: {speaker_label} at {start_time:.2f}s-{end_time:.2f}s ({segment_duration:.2f}s)")
-            
+                        
             # Extract the audio segment
             segment_start_sample = int(start_time * sample_rate)
             segment_end_sample = int(end_time * sample_rate)
@@ -430,7 +421,6 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
             
             # Skip very short segments (less than 0.1 seconds) to avoid processing errors
             if len(segment_audio) < sample_rate * 0.1:  # Less than 0.1 seconds
-                logger.debug(f"[Job {job_id}] Skipping very short segment {start_time:.2f}s-{end_time:.2f}s")
                 continue
             
             # Save the segment temporarily for FunASR processing
@@ -517,14 +507,11 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                         'end_time': end_time,
                         'word_level_info': adjusted_timestamps
                     })
-                    logger.debug(f"[Job {job_id}] Transcribed segment for {speaker_label}: '{segment_text[:100]}...' ({segment_duration:.2f}s)")
                 else:
                     logger.info(f"[Job {job_id}] No text extracted for segment {i+1}, speaker {speaker_label}")
                 
             except Exception as e:
                 logger.error(f"[Job {job_id}] Error processing speaker segment {i+1}: {e}")
-                import traceback
-                traceback.print_exc()  # Print full stack trace for debugging
                 # Add an empty segment if there was an error
                 result_segments.append({
                     'text': f"[No speech detected for {speaker_label}]",
@@ -632,8 +619,6 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
 
     except Exception as e:
         logger.error(f"[Job {job_id}] Processing failed: {e}")
-        import traceback
-        traceback.print_exc()  # Print full stack trace for debugging
         crud.update_job_status(db, job_id=job_id, status="failed")
     finally:
         db.close()
@@ -1007,10 +992,15 @@ async def summarize_job(job_id: int, request: SummarizeJobRequest = None, curren
         # Add segment count and validation info
         transcript_with_refs = f"TRANSCRIPT CONTAINS {len(transcript_segments)} MERGED SEGMENTS NUMBERED [1] THROUGH [{len(transcript_segments)}]\n" + "="*80 + "\n" + transcript_with_refs
 
-        logger.debug(f"[Job {job_id}] Summary prompt preview: {transcript_with_refs[:200]}...")
+        
+        # Enhanced comprehensive meeting summary prompt with strict language compliance
+        system_prompt = f"""You are an expert meeting analyst and transcription specialist. Your task is to create a comprehensive, factual summary of the following meeting transcript in STRICTLY {target_language}.
 
-        # Enhanced prompt for detailed and factual meeting summary with strict reference mapping
-        system_prompt = f"""You are an expert meeting analyst and transcription specialist. Your task is to create a comprehensive, factual summary of the following meeting transcript in {target_language}.
+CRITICAL LANGUAGE REQUIREMENTS:
+- ENTIRE response must be in {target_language} - NO EXCEPTIONS
+- All content, labels, and text must be {target_language} only
+- Never mix languages or use any terms from other languages
+- Ensure perfect language consistency throughout the entire response
 
 IMPORTANT: The transcript below has been processed to MERGE consecutive segments from the same speaker. The segment numbers [1], [2], [3], etc. represent these MERGED segments as they would appear in the frontend display.
 
@@ -1028,68 +1018,118 @@ NOTE ABOUT SEGMENT MERGING:
 - Each segment number [1], [2], [3] represents a complete thought/conversation turn
 - This matches exactly how users will see the transcript in the interface
 
-CONTENT ANALYSIS REQUIREMENTS:
-- Extract specific details, facts, quotes, and action items from what was actually said
-- Maintain complete factual accuracy - do not infer or assume information not explicitly stated
-- Include direct quotes when they capture key decisions or important points
-- Capture the nuances of discussions, including differing opinions or concerns raised
+COMPREHENSIVE CONTENT ANALYSIS REQUIREMENTS:
+- Extract ALL meeting elements: objectives, discussions, decisions, action items, issues, participants, timeline
+- Capture meeting structure: opening, main discussions, conclusions, next steps
+- Include specific details: numbers, dates, names, locations, technical specifications
+- Record participant roles, contributions, and interactions
+- Document decision-making processes and rationale
+- Track action items with owners, deadlines, and dependencies
+- Note unresolved issues and future follow-ups
+- Capture meeting outcomes and next steps
+- Include key quotes and important statements
+- Document any presentations, demonstrations, or shared materials
+- Record voting results or consensus methods if applicable
+- Note any cancellations, postponements, or scheduling changes
+- Capture budget or resource allocations discussed
+- Document risks, concerns, or challenges identified
+- Include opportunities or new ideas presented
 
-Your response should be a clean, focused JSON object with this structure:
+Your response should be a comprehensive JSON object with this structure:
 {{
+  "meeting_info": {{
+    "title": "Meeting title or purpose if mentioned",
+    "date": "Date if mentioned",
+    "duration": "Meeting duration if determinable",
+    "participants": ["List of speakers/participants identified"],
+    "type": "Meeting type (e.g., planning, review, brainstorming, decision-making)",
+    "references": [1, 2, 3]
+  }},
   "overview": {{
-    "content": "Brief meeting overview with main objectives and outcomes",
+    "content": "Comprehensive meeting overview including purpose, objectives, attendees, and key outcomes",
     "references": [1, 2, 3]
   }},
   "key_discussions": [
     {{
       "topic": "Main discussion topic",
-      "summary": "Comprehensive summary of the discussion including key points and conclusions",
+      "summary": "Detailed summary including background, arguments, viewpoints, alternatives considered, and conclusions",
+      "participants_involved": ["Speaker names if mentioned"],
+      "key_points": ["List of main points covered"],
       "references": [1, 2, 3]
     }}
   ],
   "decisions": [
     {{
-      "decision": "Clear decision that was made",
-      "responsible_party": "Person responsible for implementation",
+      "decision": "Complete description of the decision made",
+      "responsible_party": "Person or team responsible for implementation",
+      "rationale": "Reasoning behind the decision",
+      "impact": "Expected impact or consequences",
       "references": [1, 2]
     }}
   ],
   "action_items": [
     {{
-      "action": "Specific action to be taken",
-      "owner": "Person assigned to the action",
+      "action": "Specific, actionable task description",
+      "owner": "Person or team assigned",
       "deadline": "Deadline if mentioned",
+      "priority": "Priority level if indicated",
+      "dependencies": "Dependencies or prerequisites if mentioned",
       "references": [1, 2]
     }}
   ],
   "unresolved_issues": [
     {{
-      "issue": "Issue that remains unresolved",
+      "issue": "Detailed description of unresolved issue",
+      "impact": "Potential impact if not resolved",
+      "suggested_next_steps": "Suggested approaches if mentioned",
+      "references": [1, 2]
+    }}
+  ],
+  "next_meeting": {{
+    "date": "Next meeting date if mentioned",
+    "agenda": "Agenda items for next meeting if discussed",
+    "preparations": "Preparation requirements if mentioned",
+    "references": [1, 2]
+  }},
+  "attachments_documents": [
+    {{
+      "document": "Document or material mentioned",
+      "purpose": "Purpose or relevance",
       "references": [1, 2]
     }}
   ]
 }}
 
-IMPORTANT FORMAT GUIDELINES:
-- Keep content fluent and readable
-- Embed references naturally within the content
-- Avoid redundant labels like "主要观点：" or "参考转录："
-- Focus on clear, concise communication
-- Each section should read like natural meeting notes
+ENHANCED ANALYSIS GUIDELINES:
+1. COMPREHENSIVE COVERAGE: Extract ALL meeting aspects, not just obvious ones
+2. LANGUAGE CONSISTENCY: Ensure 100% {target_language} throughout entire response
+3. CROSS-REFERENCE every claim with ONLY actual segment numbers from the transcript
+4. VERIFY each reference number exists in the transcript before including it
+5. When information spans multiple segments, include ALL existing segment numbers: [1] [2] [3] [7]
+6. PRESERVE complete context and meaning - don't oversimplify complex discussions
+7. IDENTIFY all participants and their roles/contributions
+8. CAPTURE decision-making processes, including consensus, voting, or delegation
+9. EXTRACT specific details: numbers, dates, names, locations, technical terms
+10. DOCUMENT action items with complete implementation details
+11. RECORD meeting logistics: timing, location, format (in-person/virtual)
+12. NOTE any materials shared or referenced during the meeting
+13. CAPTURE emotional tone or urgency if relevant to decisions
+14. IDENTIFY conflicts, disagreements, or alternative solutions proposed
+15. DOCUMENT any commitments made or assurances given
+16. RECORD budget, resource, or timeline implications discussed
+17. NOTE risk assessments or mitigation strategies mentioned
+18. CAPTURE innovation opportunities or new initiatives proposed
+19. DOCUMENT compliance or regulatory considerations if applicable
+20. REFERENCE VALIDATION: Before finalizing, verify: "Does segment [X] actually contain this information?"
 
-ANALYSIS GUIDELINES:
-1. CROSS-REFERENCE every claim with ONLY actual segment numbers from the transcript
-2. VERIFY each reference number exists in the transcript before including it in your response
-3. When information spans multiple segments, include ALL existing segment numbers: [1] [2] [3] [7]
-4. Preserve the original meaning and context - don't oversimplify complex discussions
-5. Include speaker names/identifiers when attributing statements or decisions
-6. Capture disagreements, alternative viewpoints, and concerns raised
-7. Note when decisions were made by consensus, vote, or unilateral action
-8. Include specific numbers, dates, names, and other concrete details mentioned
-9. If information is unclear or ambiguous, note this rather than making assumptions
-10. For action items, ensure they are specific and actionable, not vague intentions
-11. Include direct quotes when they add clarity or capture important nuances
-12. REFERENCE VALIDATION: Before finalizing, mentally verify: "Does segment [X] actually contain this information?"
+COMPREHENSIVE FORMAT GUIDELINES:
+- Write entire response in {target_language} only
+- Keep content fluent and professional
+- Embed references naturally within the content
+- Use clear, descriptive language appropriate for business documentation
+- Organize information logically while maintaining chronological flow
+- Use consistent terminology throughout the response
+- Ensure each section reads like professional meeting minutes
 
 REFERENCE FORMAT RULES:
 - Use ONLY single brackets with numbers: [1], [2], [3]
@@ -1098,16 +1138,18 @@ REFERENCE FORMAT RULES:
 - Each reference number must correspond to an actual segment in the provided transcript
 - If you're unsure about a reference, DON'T include it rather than risk being incorrect
 
-QUALITY STANDARDS:
+ULTIMATE QUALITY STANDARDS:
+- 100% {target_language} language compliance - absolutely no exceptions
 - Every factual claim must have supporting references from actual transcript segments
-- No invented information or speculation
-- Capture the full complexity of discussions
-- Maintain professional, objective tone
-- Organize information logically while preserving chronological relationships
-- Use the exact language and terminology used in the meeting when appropriate
+- No invented information, assumptions, or speculation
+- Capture the complete complexity and nuance of all discussions
+- Maintain professional, objective tone throughout
+- Organize information comprehensively while preserving relationships
+- Use the exact language and terminology from the meeting when appropriate
 - 100% reference accuracy is mandatory - no exceptions
+- Ensure all meeting aspects are documented, not just prominent ones
 
-Return ONLY valid JSON. If a section has no relevant content, use an empty array []. Focus exclusively on what was actually discussed in the provided transcript segments, using ONLY the exact reference numbers that appear in the transcript."""
+Return ONLY valid JSON in {target_language}. If a section has no relevant content, use an empty array []. Focus exclusively on what was actually discussed in the provided transcript segments, using ONLY the exact reference numbers that appear in the transcript, and ensure the ENTIRE response is in {target_language}."""
 
         # Create user message with clear instructions about merged segment numbers
         user_message = f"""MEETING TRANSCRIPT FOR ANALYSIS:
