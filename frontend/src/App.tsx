@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
@@ -6,6 +6,9 @@ import { DashboardPage } from './pages/DashboardPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { UserSettingsPage } from './pages/UserSettingsPage';
 import { AdminPage } from './pages/AdminPage';
+import ErrorBoundary from './components/ErrorBoundary';
+import NetworkStatus from './components/NetworkStatus';
+import { setupGlobalErrorHandlers, logEnvironmentInfo } from './utils/globalErrorHandlers';
 
 // A simple component to check for auth token
 function PrivateRoute({ children }: React.PropsWithChildren) {
@@ -14,9 +17,28 @@ function PrivateRoute({ children }: React.PropsWithChildren) {
 }
 
 function App() {
+  useEffect(() => {
+    // Setup global error handlers
+    const cleanup = setupGlobalErrorHandlers();
+
+    // Log environment info for debugging
+    if (process.env.NODE_ENV === 'development') {
+      logEnvironmentInfo();
+    }
+
+    return cleanup;
+  }, []);
+
   return (
-    <BrowserRouter>
-      <Routes>
+    <ErrorBoundary>
+      <NetworkStatus>
+        <BrowserRouter
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true,
+        }}
+      >
+        <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route 
@@ -53,6 +75,8 @@ function App() {
         />
       </Routes>
     </BrowserRouter>
+    </NetworkStatus>
+    </ErrorBoundary>
   );
 }
 

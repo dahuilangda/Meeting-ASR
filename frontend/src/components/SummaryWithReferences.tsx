@@ -260,7 +260,6 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         setHasChanges(false);
 
         const parsed = JSON.parse(summary);
-        console.log('Parsed summary data:', parsed); // Debug log
         setSummaryData(parsed);
 
         // Try different possible content fields
@@ -345,9 +344,6 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
             .replace(/\n{3,}/g, '\n\n')
             .trim();
 
-          console.log('Processed content for editor:', processedContent);
-          console.log('Content length:', processedContent.length);
-          console.log('EditedContent set to:', processedContent);
           setEditedContent(processedContent);
           setOriginalContent(processedContent);
           // Initialize history with the first content
@@ -401,7 +397,6 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   // Handle reference click
   const handleReferenceClick = (refAttr: string) => {
-    console.log('Transcript reference clicked:', { refAttr }); // Debug log
     if (onSegmentClick) {
       if (refAttr.includes('-')) {
         // Handle range references like [[2-3]]
@@ -410,12 +405,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         for (let i = start; i <= end; i++) {
           range.push(i);
         }
-        console.log('Calling onSegmentClick with range:', range);
-        onSegmentClick(range);
+          onSegmentClick(range);
       } else {
         // Handle single reference like [[1]]
-        console.log('Calling onSegmentClick with single segment:', parseInt(refAttr));
-        onSegmentClick(parseInt(refAttr));
+          onSegmentClick(parseInt(refAttr));
       }
     }
   };
@@ -913,52 +906,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
   }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent, isUnmounted, normalizeEditorHtml, convertMarkdownToHtml]);
 
-  // Initialize editor content when summary changes or when editor is ready
-  useEffect(() => {
-    if (isUnmounted) return;
-
-    const editor = editorRef.current;
-    if (editor && editedContent && !isInitialized) {
-      const htmlContent = getHtmlContent();
-
-      // Only set content if the editor doesn't have focus
-      if (!editor.contains(document.activeElement)) {
-        try {
-          editor.innerHTML = htmlContent;
-        } catch (error) {
-          console.warn('Error setting initial editor content:', error);
-        }
-      }
-
-      if (!isUnmounted) {
-        setIsInitialized(true);
-      }
-    }
-  }, [editedContent, getHtmlContent, isInitialized, isUnmounted]);
-
-  // Also ensure content is rendered when component mounts or ref is set
-  useEffect(() => {
-    if (isUnmounted) return;
-
-    const editor = editorRef.current;
-    if (editor && editedContent && !isInitialized) {
-      const htmlContent = getHtmlContent();
-
-      // Only set content if the editor doesn't have focus
-      if (!editor.contains(document.activeElement)) {
-        try {
-          editor.innerHTML = htmlContent;
-        } catch (error) {
-          console.warn('Error setting editor content on mount:', error);
-        }
-      }
-
-      if (!isUnmounted) {
-        setIsInitialized(true);
-      }
-    }
-  }, [editorRef, editedContent, getHtmlContent, isInitialized, isUnmounted]);
-
+  
   // Prevent content from being overwritten by React's reconciliation
   useEffect(() => {
     if (isUnmounted) return;
