@@ -225,6 +225,64 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     return markdown;
   }, []);
 
+  // Add content to history
+  const addToHistory = useCallback((content: string) => {
+    setHistory(prevHistory => {
+      setHistoryIndex(prevIndex => {
+        // If we're not at the end of history, truncate the future history
+        let newHistory = prevIndex < prevHistory.length - 1
+          ? prevHistory.slice(0, prevIndex + 1)
+          : [...prevHistory];
+
+        // Add the new content
+        newHistory.push(content);
+
+        // Limit history size
+        if (newHistory.length > maxHistorySize) {
+          newHistory = newHistory.slice(-maxHistorySize);
+          return newHistory.length - 1;
+        }
+
+        return newHistory.length - 1;
+      });
+      return prevHistory;
+    });
+  }, []);
+
+  // Undo function
+  const undo = useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      const content = history[newIndex];
+      setEditedContent(content);
+      setHasChanges(content !== originalContent);
+
+      // Update editor content
+      if (editorRef.current) {
+        const htmlContent = getHtmlContent();
+        editorRef.current.innerHTML = htmlContent;
+      }
+    }
+  }, [historyIndex, history, originalContent, getHtmlContent]);
+
+  // Redo function
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      const content = history[newIndex];
+      setEditedContent(content);
+      setHasChanges(content !== originalContent);
+
+      // Update editor content
+      if (editorRef.current) {
+        const htmlContent = getHtmlContent();
+        editorRef.current.innerHTML = htmlContent;
+      }
+    }
+  }, [historyIndex, history, originalContent, getHtmlContent]);
+
   // Handle WYSIWYG input with auto-save
   const handleWysiwygInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
     e.persist();
@@ -293,64 +351,6 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
     return false;
   }, []);
-
-  // Add content to history
-  const addToHistory = useCallback((content: string) => {
-    setHistory(prevHistory => {
-      setHistoryIndex(prevIndex => {
-        // If we're not at the end of history, truncate the future history
-        let newHistory = prevIndex < prevHistory.length - 1
-          ? prevHistory.slice(0, prevIndex + 1)
-          : [...prevHistory];
-
-        // Add the new content
-        newHistory.push(content);
-
-        // Limit history size
-        if (newHistory.length > maxHistorySize) {
-          newHistory = newHistory.slice(-maxHistorySize);
-          return newHistory.length - 1;
-        }
-
-        return newHistory.length - 1;
-      });
-      return prevHistory;
-    });
-  }, []);
-
-  // Undo function
-  const undo = useCallback(() => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      setHistoryIndex(newIndex);
-      const content = history[newIndex];
-      setEditedContent(content);
-      setHasChanges(content !== originalContent);
-
-      // Update editor content
-      if (editorRef.current) {
-        const htmlContent = getHtmlContent();
-        editorRef.current.innerHTML = htmlContent;
-      }
-    }
-  }, [historyIndex, history, originalContent, getHtmlContent]);
-
-  // Redo function
-  const redo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      setHistoryIndex(newIndex);
-      const content = history[newIndex];
-      setEditedContent(content);
-      setHasChanges(content !== originalContent);
-
-      // Update editor content
-      if (editorRef.current) {
-        const htmlContent = getHtmlContent();
-        editorRef.current.innerHTML = htmlContent;
-      }
-    }
-  }, [historyIndex, history, originalContent, getHtmlContent]);
 
   // Restore focus to editor and get selection
   const restoreEditorFocus = useCallback(() => {
