@@ -11,6 +11,7 @@ sqlalchemy
 passlib
 argon2-cffi
 python-jose[cryptography]
+pydantic[email]
 
 # For ASR
 # Using FunASR for Chinese ASR with punctuation support

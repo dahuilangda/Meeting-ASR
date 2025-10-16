@@ -1546,13 +1546,13 @@ async def update_user_by_admin(
 
     # Only super admin can change roles to super_admin
     if user_update.role == models.UserRole.SUPER_ADMIN and current_user.role != models.UserRole.SUPER_ADMIN:
-        raise HTTPException(status_code=403_FORBIDDEN, detail="Only super admin can assign super admin role")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only super admin can assign super admin role")
 
     # Prevent admin from deactivating themselves or other admins (unless super admin)
     if (user_id == current_user.id and
         user_update.is_active == False and
         current_user.role != models.UserRole.SUPER_ADMIN):
-        raise HTTPException(status_code=403_FORBIDDEN, detail="Cannot deactivate yourself")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot deactivate yourself")
 
     # Check if email is already taken by another user
     if user_update.email and user_update.email != target_user.email:
@@ -1619,12 +1619,12 @@ async def deactivate_user(
 
     # Prevent deactivating yourself unless you're super admin
     if user_id == current_user.id and current_user.role != models.UserRole.SUPER_ADMIN:
-        raise HTTPException(status_code=403_FORBIDDEN, detail="Cannot deactivate yourself")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot deactivate yourself")
 
     # Prevent admin from deactivating other admins unless super admin
     if (target_user.role in [models.UserRole.ADMIN, models.UserRole.SUPER_ADMIN] and
         current_user.role != models.UserRole.SUPER_ADMIN):
-        raise HTTPException(status_code=403_FORBIDDEN, detail="Only super admin can deactivate admin accounts")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only super admin can deactivate admin accounts")
 
     user = crud.deactivate_user(db, user_id)
     return {"message": "User deactivated successfully"}

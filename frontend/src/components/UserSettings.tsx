@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Alert, Button, Card, Form, Modal, Spinner } from 'react-bootstrap';
+import { useNavigate } from 'react-router-dom';
 import { updateCurrentUser, changePassword, User, UserUpdate, PasswordChange } from '../api/user';
 
 interface UserSettingsProps {
@@ -8,6 +9,7 @@ interface UserSettingsProps {
 }
 
 export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserUpdate }) => {
+  const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +87,16 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
 
   return (
     <div className="user-settings">
-      <h2 className="mb-4">User Settings</h2>
+      <div className="d-flex align-items-center mb-4">
+        <Button
+          variant="outline-secondary"
+          onClick={() => navigate('/')}
+          className="me-3"
+        >
+          ← Back
+        </Button>
+        <h2 className="mb-0">User Settings</h2>
+      </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
       {success && <Alert variant="success">{success}</Alert>}

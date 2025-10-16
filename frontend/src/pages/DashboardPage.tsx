@@ -128,9 +128,9 @@ export function DashboardPage() {
     return (
         <>
             {/* Navigation Bar */}
-            <Navbar bg="dark" variant="dark" expand="lg" className="mb-4">
+            <Navbar bg="light" variant="light" expand="lg" className="mb-4 border-bottom shadow-sm">
                 <div className="container">
-                    <Navbar.Brand as={Link} to="/">
+                    <Navbar.Brand as={Link} to="/" className="text-primary fw-bold">
                         Meeting ASR
                     </Navbar.Brand>
                     <Navbar.Toggle aria-controls="basic-navbar-nav" />
@@ -148,7 +148,7 @@ export function DashboardPage() {
                                         </Nav.Link>
                                     )}
                                     <Dropdown align="end">
-                                        <Dropdown.Toggle variant="outline-light" id="user-dropdown">
+                                        <Dropdown.Toggle variant="outline-primary" id="user-dropdown">
                                             <i className="bi bi-person-circle me-1"></i>
                                             {currentUser.username}
                                         </Dropdown.Toggle>
@@ -188,22 +188,7 @@ export function DashboardPage() {
             </Navbar>
 
             <div className="container mt-4">
-                <div className="d-flex justify-content-between align-items-center mb-4">
-                    <h1>Dashboard</h1>
-                    {currentUser && (
-                        <div className="text-muted">
-                            Welcome, <strong>{currentUser.full_name || currentUser.username}</strong>
-                            {currentUser.role !== 'user' && (
-                                <Badge bg={
-                                    currentUser.role === 'super_admin' ? 'danger' :
-                                    currentUser.role === 'admin' ? 'warning' : 'primary'
-                                } className="ms-2">
-                                    {currentUser.role.replace('_', ' ').toUpperCase()}
-                                </Badge>
-                            )}
-                        </div>
-                    )}
-                </div>
+                <h1 className="mb-4">Dashboard</h1>
             
             <UploadForm onUploadSuccess={handleUploadSuccess} />
 
