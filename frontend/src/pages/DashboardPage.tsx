@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiClient } from '../api';
+import { apiClient, renameJob } from '../api';
 import { getCurrentUser, User } from '../api/user';
 import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
 import { JobWebSocketClient, WebSocketMessage } from '../websocket';
@@ -96,6 +96,9 @@ export function DashboardPage() {
     const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
     const [wsNotification, setWsNotification] = useState<string>('');
     const [isUploading, setIsUploading] = useState(false);
+    const [renamingJobId, setRenamingJobId] = useState<number | null>(null);
+    const [renameValue, setRenameValue] = useState('');
+    const [isRenaming, setIsRenaming] = useState(false);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
     const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
     const navigate = useNavigate();
@@ -134,6 +137,46 @@ export function DashboardPage() {
             setError('');
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Failed to cancel the job. Please try again.');
+        }
+    };
+
+    const handleStartRename = (job: Job) => {
+        setRenamingJobId(job.id);
+        setRenameValue(job.filename);
+        setError('');
+    };
+
+    const handleCancelRename = () => {
+        setRenamingJobId(null);
+        setRenameValue('');
+    };
+
+    const handleSaveRename = async () => {
+        if (renamingJobId === null) {
+            return;
+        }
+
+        const trimmedName = renameValue.trim();
+        if (!trimmedName) {
+            setError('Filename cannot be empty.');
+            return;
+        }
+
+        setIsRenaming(true);
+        try {
+            const updatedJob = await renameJob(renamingJobId, trimmedName);
+            setJobs(prevJobs =>
+                prevJobs.map(job =>
+                    job.id === renamingJobId ? { ...job, filename: updatedJob.filename } : job
+                )
+            );
+            setRenamingJobId(null);
+            setRenameValue('');
+            setError('');
+        } catch (err: any) {
+            setError(err.response?.data?.detail || 'Failed to rename job. Please try again.');
+        } finally {
+            setIsRenaming(false);
         }
     };
 
@@ -344,7 +387,61 @@ export function DashboardPage() {
                         <tbody>
                             {jobs.map(job => (
                                 <tr key={job.id}>
-                                    <td>{job.filename}</td>
+                                    <td style={{ maxWidth: '260px' }}>
+                                        {renamingJobId === job.id ? (
+                                            <div className="d-flex align-items-center gap-2">
+                                                <input
+                                                    className="form-control form-control-sm"
+                                                    value={renameValue}
+                                                    onChange={event => setRenameValue(event.target.value)}
+                                                    onKeyDown={event => {
+                                                        if (event.key === 'Enter') {
+                                                            event.preventDefault();
+                                                            handleSaveRename();
+                                                        } else if (event.key === 'Escape') {
+                                                            event.preventDefault();
+                                                            handleCancelRename();
+                                                        }
+                                                    }}
+                                                    disabled={isRenaming}
+                                                    autoFocus
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-sm btn-primary"
+                                                    onClick={handleSaveRename}
+                                                    disabled={isRenaming || !renameValue.trim()}
+                                                    title="Save filename"
+                                                >
+                                                    <i className="bi bi-check-lg"></i>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-sm btn-outline-secondary"
+                                                    onClick={handleCancelRename}
+                                                    disabled={isRenaming}
+                                                    title="Cancel"
+                                                >
+                                                    <i className="bi bi-x-lg"></i>
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="d-flex align-items-center justify-content-between gap-2">
+                                                <span className="text-truncate" style={{ maxWidth: '180px' }} title={job.filename}>
+                                                    {job.filename}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-link btn-sm p-0 text-secondary"
+                                                    onClick={() => handleStartRename(job)}
+                                                    disabled={isRenaming}
+                                                    title="Rename file"
+                                                >
+                                                    <i className="bi bi-pencil-square"></i>
+                                                </button>
+                                            </div>
+                                        )}
+                                    </td>
                                     <td>
                                         <div className="d-flex align-items-center">
                                             <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : (job.status === 'processing' ? 'primary' : 'warning'))} me-2`}>

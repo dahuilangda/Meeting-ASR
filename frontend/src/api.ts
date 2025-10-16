@@ -204,3 +204,17 @@ export const generateSummary = async (jobId: number, language: string = "Chinese
     });
     return response.data;
 };
+
+export interface JobRenameResponse {
+    id: number;
+    filename: string;
+    status: string;
+    created_at: string;
+    summary?: string | null;
+    transcript?: string | null;
+}
+
+export const renameJob = async (jobId: number, filename: string): Promise<JobRenameResponse> => {
+    const response = await apiClient.put<JobRenameResponse>(`/jobs/${jobId}/rename`, { filename });
+    return response.data;
+};

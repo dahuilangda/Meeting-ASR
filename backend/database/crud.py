@@ -169,6 +169,18 @@ def update_job_summary(db: Session, job_id: int, summary: str):
         return db_job
     return None
 
+def update_job_filename(db: Session, job_id: int, owner_id: int, filename: str):
+    db_job = db.query(models.Job).filter(
+        models.Job.id == job_id,
+        models.Job.owner_id == owner_id
+    ).first()
+    if db_job:
+        db_job.filename = filename
+        db.commit()
+        db.refresh(db_job)
+        return db_job
+    return None
+
 def update_job_progress(db: Session, job_id: int, progress: float):
     """Update job progress (0.0 to 100.0)"""
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()

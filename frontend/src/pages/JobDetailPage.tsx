@@ -258,20 +258,24 @@ export function JobDetailPage() {
                                     <option value="Korean">Korean</option>
                                 </select>
                                 <button
-                                    className="btn btn-outline-primary btn-sm"
+                                    className="btn btn-outline-primary btn-sm d-inline-flex align-items-center gap-2"
+                                    style={{ minWidth: '160px', padding: '6px 12px', fontSize: '0.85rem' }}
                                     onClick={handleSummarize}
                                     disabled={isSummarizing}
                                 >
-                                    {isSummarizing ? (
-                                        <>
-                                            <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                                            Generating...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <i className="bi bi-journal-text me-1"></i> Generate Summary
-                                        </>
-                                    )}
+                                    <span
+                                        className="d-inline-flex align-items-center justify-content-center"
+                                        style={{ width: '1.25rem' }}
+                                    >
+                                        {isSummarizing ? (
+                                            <span className="spinner-border spinner-border-sm" role="status"></span>
+                                        ) : (
+                                            <i className="bi bi-journal-text"></i>
+                                        )}
+                                    </span>
+                                    <span className="text-nowrap">
+                                        {isSummarizing ? 'Generating...' : 'Generate Summary'}
+                                    </span>
                                 </button>
                             </div>
                         </div>

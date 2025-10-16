@@ -1,6 +1,6 @@
 from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
@@ -12,6 +12,7 @@ import re
 import asyncio
 import logging
 import threading
+import mimetypes
 from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -834,17 +835,24 @@ def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Check if audio file exists in uploads
-    import os
-    upload_dir = "backend/uploads"
-    audio_path = os.path.join(upload_dir, job.filename)
-    
-    if not os.path.exists(audio_path):
+    audio_path = None
+    if job.file_path and os.path.exists(job.file_path):
+        audio_path = job.file_path
+    else:
+        upload_dir = "backend/uploads"
+        candidate_path = os.path.join(upload_dir, job.filename)
+        if os.path.exists(candidate_path):
+            audio_path = candidate_path
+
+    if not audio_path:
         raise HTTPException(status_code=404, detail="Audio file not found")
-    
-    # Redirect to the static file path
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=f"/uploads/{job.filename}")
+
+    media_type, _ = mimetypes.guess_type(audio_path)
+    return FileResponse(
+        audio_path,
+        media_type=media_type or "application/octet-stream",
+        filename=os.path.basename(audio_path)
+    )
 
 # --- Post-processing Endpoints ---
 from pydantic import BaseModel, Field
@@ -876,6 +884,30 @@ def create_openai_client():
 
 class SummarizeJobRequest(BaseModel):
     target_language: str = "Chinese"  # Default to Chinese if not specified
+
+class RenameJobRequest(BaseModel):
+    filename: str
+
+@app.put("/jobs/{job_id}/rename", response_model=schemas.Job)
+async def rename_job(job_id: int, request: RenameJobRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    new_filename = request.filename.strip()
+    if not new_filename:
+        raise HTTPException(status_code=400, detail="Filename cannot be empty")
+    if len(new_filename) > 255:
+        raise HTTPException(status_code=400, detail="Filename is too long")
+    if any(ch in new_filename for ch in ("/", "\\")):
+        raise HTTPException(status_code=400, detail="Filename cannot contain path separators")
+
+    updated_job = crud.update_job_filename(db, job_id=job_id, owner_id=current_user.id, filename=new_filename)
+    if not updated_job:
+        raise HTTPException(status_code=500, detail="Failed to update filename")
+
+    logger.info(f"[Job {job_id}] Filename updated to {new_filename}")
+    return updated_job
 
 @app.post("/jobs/{job_id}/summarize", response_model=schemas.Job)
 async def summarize_job(job_id: int, request: SummarizeJobRequest = None, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
