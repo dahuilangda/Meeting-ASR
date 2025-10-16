@@ -71,20 +71,49 @@ async def get_current_user(token: str = Depends(security.oauth2_scheme), db: Ses
         raise credentials_exception
     user = crud.get_user_by_username(db, username=token_data.username)
     if user is None: raise credentials_exception
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated")
     return user
+
+async def get_current_active_user(current_user: schemas.User = Depends(get_current_user)):
+    if not current_user.is_active:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+async def get_admin_user(current_user: schemas.User = Depends(get_current_active_user)):
+    if current_user.role not in [models.UserRole.ADMIN, models.UserRole.SUPER_ADMIN]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    return current_user
+
+async def get_super_admin_user(current_user: schemas.User = Depends(get_current_active_user)):
+    if current_user.role != models.UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super admin access required")
+    return current_user
 
 @app.post("/register", response_model=schemas.User)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = crud.get_user_by_username(db, username=user.username)
     if db_user: raise HTTPException(status_code=400, detail="Username already registered")
+
+    if user.email:
+        db_email = crud.get_user_by_email(db, email=user.email)
+        if db_email: raise HTTPException(status_code=400, detail="Email already registered")
+
     return crud.create_user(db=db, user=user)
 
 @app.post("/token", response_model=schemas.Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = crud.get_user_by_username(db, username=form_data.username)
-    if not user or not security.verify_password(form_data.password, user.hashed_password):
+    if not user or not crud.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
-    access_token = security.create_access_token(data={"sub": user.username})
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
+
+    # Update last login time
+    crud.update_last_login(db, user.id)
+
+    access_token = security.create_access_token(data={"sub": user.username, "role": user.role.value})
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- File Processing Workflow ---
@@ -1378,3 +1407,251 @@ def format_summary_as_markdown_with_refs(summary_data, transcript_segments):
             markdown += "\n\n"
 
     return markdown.strip()
+
+# --- User Management Endpoints ---
+
+@app.get("/users/me", response_model=schemas.UserResponse)
+async def get_current_user_info(current_user: schemas.User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Get current user information"""
+    job_count = db.query(models.Job).filter(models.Job.owner_id == current_user.id).count()
+    return schemas.UserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at,
+        last_login=current_user.last_login,
+        job_count=job_count
+    )
+
+@app.put("/users/me", response_model=schemas.UserResponse)
+async def update_current_user(
+    user_update: schemas.UserUpdate,
+    current_user: schemas.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Update current user information"""
+    # Users can only update their own email and full_name
+    allowed_update = schemas.UserUpdate(
+        email=user_update.email,
+        full_name=user_update.full_name
+    )
+
+    # Check if email is already taken by another user
+    if user_update.email and user_update.email != current_user.email:
+        existing_user = crud.get_user_by_email(db, email=user_update.email)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    updated_user = crud.update_user(db, current_user.id, allowed_update)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    job_count = db.query(models.Job).filter(models.Job.owner_id == updated_user.id).count()
+    return schemas.UserResponse(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        role=updated_user.role,
+        is_active=updated_user.is_active,
+        created_at=updated_user.created_at,
+        last_login=updated_user.last_login,
+        job_count=job_count
+    )
+
+@app.post("/users/change_password")
+async def change_password(
+    password_data: schemas.PasswordChange,
+    current_user: schemas.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Change current user password"""
+    # Verify current password
+    if not crud.verify_password(password_data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    # Update password
+    crud.update_user_password(db, current_user.id, password_data.new_password)
+    return {"message": "Password changed successfully"}
+
+# --- Admin User Management ---
+
+@app.get("/admin/users", response_model=List[schemas.UserResponse])
+async def get_all_users(
+    skip: int = 0,
+    limit: int = 100,
+    include_inactive: bool = False,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Get all users (Admin only)"""
+    users = crud.get_users(db, skip=skip, limit=limit, include_inactive=include_inactive)
+    user_responses = []
+
+    for user in users:
+        job_count = db.query(models.Job).filter(models.Job.owner_id == user.id).count()
+        user_responses.append(schemas.UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            role=user.role,
+            is_active=user.is_active,
+            created_at=user.created_at,
+            last_login=user.last_login,
+            job_count=job_count
+        ))
+
+    return user_responses
+
+@app.get("/admin/users/{user_id}", response_model=schemas.UserResponse)
+async def get_user_by_id(
+    user_id: int,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Get specific user by ID (Admin only)"""
+    user = crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    job_count = db.query(models.Job).filter(models.Job.owner_id == user.id).count()
+    return schemas.UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        job_count=job_count
+    )
+
+@app.put("/admin/users/{user_id}", response_model=schemas.UserResponse)
+async def update_user_by_admin(
+    user_id: int,
+    user_update: schemas.UserUpdate,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Update user by admin"""
+    # Check if user exists
+    target_user = crud.get_user_by_id(db, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Only super admin can change roles to super_admin
+    if user_update.role == models.UserRole.SUPER_ADMIN and current_user.role != models.UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403_FORBIDDEN, detail="Only super admin can assign super admin role")
+
+    # Prevent admin from deactivating themselves or other admins (unless super admin)
+    if (user_id == current_user.id and
+        user_update.is_active == False and
+        current_user.role != models.UserRole.SUPER_ADMIN):
+        raise HTTPException(status_code=403_FORBIDDEN, detail="Cannot deactivate yourself")
+
+    # Check if email is already taken by another user
+    if user_update.email and user_update.email != target_user.email:
+        existing_user = crud.get_user_by_email(db, email=user_update.email)
+        if existing_user and existing_user.id != user_id:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+    updated_user = crud.update_user(db, user_id, user_update)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    job_count = db.query(models.Job).filter(models.Job.owner_id == updated_user.id).count()
+    return schemas.UserResponse(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        full_name=updated_user.full_name,
+        role=updated_user.role,
+        is_active=updated_user.is_active,
+        created_at=updated_user.created_at,
+        last_login=updated_user.last_login,
+        job_count=job_count
+    )
+
+@app.post("/admin/users/{user_id}/reset_password")
+async def reset_user_password(
+    user_id: int,
+    password_data: schemas.PasswordReset,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Reset user password (Admin only)"""
+    # Check if user exists
+    target_user = crud.get_user_by_id(db, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update password
+    crud.update_user_password(db, user_id, password_data.new_password)
+    return {"message": "Password reset successfully"}
+
+@app.post("/admin/users/{user_id}/activate")
+async def activate_user(
+    user_id: int,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Activate user account (Admin only)"""
+    user = crud.activate_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User activated successfully"}
+
+@app.post("/admin/users/{user_id}/deactivate")
+async def deactivate_user(
+    user_id: int,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Deactivate user account (Admin only)"""
+    target_user = crud.get_user_by_id(db, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent deactivating yourself unless you're super admin
+    if user_id == current_user.id and current_user.role != models.UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403_FORBIDDEN, detail="Cannot deactivate yourself")
+
+    # Prevent admin from deactivating other admins unless super admin
+    if (target_user.role in [models.UserRole.ADMIN, models.UserRole.SUPER_ADMIN] and
+        current_user.role != models.UserRole.SUPER_ADMIN):
+        raise HTTPException(status_code=403_FORBIDDEN, detail="Only super admin can deactivate admin accounts")
+
+    user = crud.deactivate_user(db, user_id)
+    return {"message": "User deactivated successfully"}
+
+@app.get("/admin/stats", response_model=dict)
+async def get_admin_stats(
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Get system statistics (Admin only)"""
+    total_users = crud.get_user_count(db)
+    active_users = crud.get_user_count(db, include_inactive=False)
+    total_jobs = db.query(models.Job).count()
+    completed_jobs = db.query(models.Job).filter(models.Job.status == "completed").count()
+    processing_jobs = db.query(models.Job).filter(models.Job.status == "processing").count()
+    failed_jobs = db.query(models.Job).filter(models.Job.status == "failed").count()
+
+    return {
+        "users": {
+            "total": total_users,
+            "active": active_users,
+            "inactive": total_users - active_users
+        },
+        "jobs": {
+            "total": total_jobs,
+            "completed": completed_jobs,
+            "processing": processing_jobs,
+            "failed": failed_jobs
+        }
+    }

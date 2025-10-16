@@ -4,6 +4,8 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { JobDetailPage } from './pages/JobDetailPage';
+import { UserSettingsPage } from './pages/UserSettingsPage';
+import { AdminPage } from './pages/AdminPage';
 
 // A simple component to check for auth token
 function PrivateRoute({ children }: React.PropsWithChildren) {
@@ -25,11 +27,27 @@ function App() {
             </PrivateRoute>
           }
         />
-        <Route 
-          path="/jobs/:jobId" 
+        <Route
+          path="/jobs/:jobId"
           element={
             <PrivateRoute>
               <JobDetailPage />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <PrivateRoute>
+              <UserSettingsPage />
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <PrivateRoute>
+              <AdminPage />
             </PrivateRoute>
           }
         />

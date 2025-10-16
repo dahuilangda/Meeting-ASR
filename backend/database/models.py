@@ -1,14 +1,26 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean, Enum
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
+import enum
+
+class UserRole(enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+    SUPER_ADMIN = "super_admin"
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=True)
     hashed_password = Column(String)
+    role = Column(Enum(UserRole), default=UserRole.USER)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
+    full_name = Column(String, nullable=True)
 
     jobs = relationship("Job", back_populates="owner")
 

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { apiClient } from '../api';
+import { getCurrentUser, User } from '../api/user';
+import { Navbar, Nav, Dropdown, Badge } from 'react-bootstrap';
 
 interface Job {
     id: number;
@@ -66,6 +68,8 @@ export function DashboardPage() {
     const [jobs, setJobs] = useState<Job[]>([]);
     const [error, setError] = useState('');
     const [isUploading, setIsUploading] = useState(false); // Track if any operation is happening
+    const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const navigate = useNavigate();
 
     const fetchJobs = () => {
         apiClient.get('/jobs').then(response => {
@@ -100,16 +104,106 @@ export function DashboardPage() {
         return () => clearInterval(interval);
     }, []);
 
+    useEffect(() => {
+        const loadUser = async () => {
+            try {
+                const user = await getCurrentUser();
+                setCurrentUser(user);
+            } catch (error) {
+                console.error('Failed to load user:', error);
+            }
+        };
+        loadUser();
+    }, []);
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        navigate('/login');
+    };
+
     const handleUploadSuccess = (newJob: Job) => {
         setJobs([newJob, ...jobs]);
     };
 
     return (
-        <div className="container mt-5">
-            <div className="d-flex justify-content-between align-items-center mb-4">
-                <h1>Dashboard</h1>
-                <button className="btn btn-secondary" onClick={() => { localStorage.removeItem('token'); window.location.href = '/login'; }}>Logout</button>
-            </div>
+        <>
+            {/* Navigation Bar */}
+            <Navbar bg="dark" variant="dark" expand="lg" className="mb-4">
+                <div className="container">
+                    <Navbar.Brand as={Link} to="/">
+                        Meeting ASR
+                    </Navbar.Brand>
+                    <Navbar.Toggle aria-controls="basic-navbar-nav" />
+                    <Navbar.Collapse id="basic-navbar-nav">
+                        <Nav className="me-auto">
+                            <Nav.Link as={Link} to="/">Dashboard</Nav.Link>
+                        </Nav>
+                        <Nav>
+                            {currentUser && (
+                                <>
+                                    {(currentUser.role === 'admin' || currentUser.role === 'super_admin') && (
+                                        <Nav.Link as={Link} to="/admin">
+                                            <i className="bi bi-shield-lock me-1"></i>
+                                            Admin
+                                        </Nav.Link>
+                                    )}
+                                    <Dropdown align="end">
+                                        <Dropdown.Toggle variant="outline-light" id="user-dropdown">
+                                            <i className="bi bi-person-circle me-1"></i>
+                                            {currentUser.username}
+                                        </Dropdown.Toggle>
+                                        <Dropdown.Menu>
+                                            <Dropdown.Header>
+                                                <div className="d-flex align-items-center">
+                                                    <div>
+                                                        <div>{currentUser.full_name || currentUser.username}</div>
+                                                        <small className="text-muted">
+                                                            <Badge bg={
+                                                                currentUser.role === 'super_admin' ? 'danger' :
+                                                                currentUser.role === 'admin' ? 'warning' : 'primary'
+                                                            } className="me-1">
+                                                                {currentUser.role.replace('_', ' ').toUpperCase()}
+                                                            </Badge>
+                                                        </small>
+                                                    </div>
+                                                </div>
+                                            </Dropdown.Header>
+                                            <Dropdown.Divider />
+                                            <Dropdown.Item as={Link} to="/settings">
+                                                <i className="bi bi-gear me-2"></i>
+                                                Settings
+                                            </Dropdown.Item>
+                                            <Dropdown.Divider />
+                                            <Dropdown.Item onClick={handleLogout}>
+                                                <i className="bi bi-box-arrow-right me-2"></i>
+                                                Logout
+                                            </Dropdown.Item>
+                                        </Dropdown.Menu>
+                                    </Dropdown>
+                                </>
+                            )}
+                        </Nav>
+                    </Navbar.Collapse>
+                </div>
+            </Navbar>
+
+            <div className="container mt-4">
+                <div className="d-flex justify-content-between align-items-center mb-4">
+                    <h1>Dashboard</h1>
+                    {currentUser && (
+                        <div className="text-muted">
+                            Welcome, <strong>{currentUser.full_name || currentUser.username}</strong>
+                            {currentUser.role !== 'user' && (
+                                <Badge bg={
+                                    currentUser.role === 'super_admin' ? 'danger' :
+                                    currentUser.role === 'admin' ? 'warning' : 'primary'
+                                } className="ms-2">
+                                    {currentUser.role.replace('_', ' ').toUpperCase()}
+                                </Badge>
+                            )}
+                        </div>
+                    )}
+                </div>
             
             <UploadForm onUploadSuccess={handleUploadSuccess} />
 
@@ -154,6 +248,7 @@ export function DashboardPage() {
                     </table>
                 </div>
             </div>
-        </div>
+            </div>
+        </>
     );
 }

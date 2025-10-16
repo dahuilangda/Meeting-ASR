@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 from . import models, schemas
 from passlib.context import CryptContext
+from typing import Optional
+import datetime
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
@@ -10,16 +12,84 @@ def get_password_hash(password):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     return pwd_context.hash(password[:72])
 
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
 def get_user_by_username(db: Session, username: str):
     return db.query(models.User).filter(models.User.username == username).first()
+
+def get_user_by_email(db: Session, email: str):
+    return db.query(models.User).filter(models.User.email == email).first()
+
+def get_user_by_id(db: Session, user_id: int):
+    return db.query(models.User).filter(models.User.id == user_id).first()
+
+def get_users(db: Session, skip: int = 0, limit: int = 100, include_inactive: bool = False):
+    query = db.query(models.User)
+    if not include_inactive:
+        query = query.filter(models.User.is_active == True)
+    return query.offset(skip).limit(limit).all()
+
+def get_user_count(db: Session, include_inactive: bool = False):
+    query = db.query(models.User)
+    if not include_inactive:
+        query = query.filter(models.User.is_active == True)
+    return query.count()
 
 def create_user(db: Session, user: schemas.UserCreate):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     hashed_password = get_password_hash(user.password[:72])
-    db_user = models.User(username=user.username, hashed_password=hashed_password)
+    db_user = models.User(
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        hashed_password=hashed_password,
+        role=user.role if user.role else models.UserRole.USER
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    return db_user
+
+def update_user(db: Session, user_id: int, user_update: schemas.UserUpdate):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        update_data = user_update.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_user, field, value)
+        db.commit()
+        db.refresh(db_user)
+    return db_user
+
+def update_user_password(db: Session, user_id: int, new_password: str):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db_user.hashed_password = get_password_hash(new_password[:72])
+        db.commit()
+        db.refresh(db_user)
+    return db_user
+
+def update_last_login(db: Session, user_id: int):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db_user.last_login = datetime.datetime.utcnow()
+        db.commit()
+    return db_user
+
+def deactivate_user(db: Session, user_id: int):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db_user.is_active = False
+        db.commit()
+        db.refresh(db_user)
+    return db_user
+
+def activate_user(db: Session, user_id: int):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db_user.is_active = True
+        db.commit()
+        db.refresh(db_user)
     return db_user
 
 # --- Job CRUD ---
