@@ -60,6 +60,11 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
+  // Undo/Redo state management
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const maxHistorySize = 50; // Limit history size to prevent memory issues
+
   useEffect(() => {
     if (summary) {
       try {
@@ -100,11 +105,17 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
           setEditedContent(processedContent);
           setOriginalContent(processedContent);
+          // Initialize history with the first content
+          setHistory([processedContent]);
+          setHistoryIndex(0);
         } else {
           // Fallback: if no formatted content, create a simple message
           const fallbackContent = 'No formatted summary available. Please generate a new summary.';
           setEditedContent(fallbackContent);
           setOriginalContent(fallbackContent);
+          // Initialize history with the fallback content
+          setHistory([fallbackContent]);
+          setHistoryIndex(0);
         }
       } catch (error) {
         console.error('Error parsing summary:', error);
@@ -115,6 +126,9 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         });
         setEditedContent(summary);
         setOriginalContent(summary);
+        // Initialize history with the summary content
+        setHistory([summary]);
+        setHistoryIndex(0);
       }
     }
   }, [summary]);
@@ -220,10 +234,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       const htmlContent = target.innerHTML;
       const markdownContent = htmlToMarkdown(htmlContent);
 
-      setEditedContent(markdownContent);
-      setHasChanges(markdownContent !== originalContent);
+      // Only add to history if content actually changed
+      if (markdownContent !== editedContent) {
+        setEditedContent(markdownContent);
+        setHasChanges(markdownContent !== originalContent);
+        addToHistory(markdownContent);
+      }
     }
-  }, [htmlToMarkdown, originalContent, isEditing]);
+  }, [htmlToMarkdown, originalContent, isEditing, editedContent, addToHistory]);
 
   // Handle focus to track editing state
   const handleEditorFocus = useCallback(() => {
@@ -275,6 +293,64 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
     return false;
   }, []);
+
+  // Add content to history
+  const addToHistory = useCallback((content: string) => {
+    setHistory(prevHistory => {
+      setHistoryIndex(prevIndex => {
+        // If we're not at the end of history, truncate the future history
+        let newHistory = prevIndex < prevHistory.length - 1
+          ? prevHistory.slice(0, prevIndex + 1)
+          : [...prevHistory];
+
+        // Add the new content
+        newHistory.push(content);
+
+        // Limit history size
+        if (newHistory.length > maxHistorySize) {
+          newHistory = newHistory.slice(-maxHistorySize);
+          return newHistory.length - 1;
+        }
+
+        return newHistory.length - 1;
+      });
+      return prevHistory;
+    });
+  }, []);
+
+  // Undo function
+  const undo = useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      const content = history[newIndex];
+      setEditedContent(content);
+      setHasChanges(content !== originalContent);
+
+      // Update editor content
+      if (editorRef.current) {
+        const htmlContent = getHtmlContent();
+        editorRef.current.innerHTML = htmlContent;
+      }
+    }
+  }, [historyIndex, history, originalContent, getHtmlContent]);
+
+  // Redo function
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      const content = history[newIndex];
+      setEditedContent(content);
+      setHasChanges(content !== originalContent);
+
+      // Update editor content
+      if (editorRef.current) {
+        const htmlContent = getHtmlContent();
+        editorRef.current.innerHTML = htmlContent;
+      }
+    }
+  }, [historyIndex, history, originalContent, getHtmlContent]);
 
   // Restore focus to editor and get selection
   const restoreEditorFocus = useCallback(() => {
@@ -442,8 +518,21 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           }
         }
       }
+      // Also update the content state and add to history after formatting
+      setTimeout(() => {
+        const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
+        if (editor) {
+          const newHtmlContent = editor.innerHTML;
+          const newMarkdownContent = htmlToMarkdown(newHtmlContent);
+          if (newMarkdownContent !== editedContent) {
+            setEditedContent(newMarkdownContent);
+            setHasChanges(newMarkdownContent !== originalContent);
+            addToHistory(newMarkdownContent);
+          }
+        }
+      }, 50);
     }, 10); // Small delay to ensure focus is restored
-  }, [isSelectionFormatted, restoreEditorFocus]);
+  }, [isSelectionFormatted, restoreEditorFocus, editedContent, originalContent, htmlToMarkdown, addToHistory]);
 
   // Check toolbar button states based on current selection
   const checkToolbarStates = useCallback(() => {
@@ -596,6 +685,26 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           console.error('Error applying italic formatting:', error);
         }
       }
+
+      // Ctrl+Z or Cmd+Z for undo
+      if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        try {
+          undo();
+        } catch (error) {
+          console.error('Error undoing:', error);
+        }
+      }
+
+      // Ctrl+Y or Cmd+Shift+Z for redo
+      if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
+        event.preventDefault();
+        try {
+          redo();
+        } catch (error) {
+          console.error('Error redoing:', error);
+        }
+      }
     };
 
     const handleSelectionChange = () => {
@@ -617,7 +726,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('selectionchange', handleSelectionChange);
     };
-  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting]);
+  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting, undo, redo]);
 
 
   if (!summary) {
@@ -795,12 +904,54 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               opacity: 0.7;
               margin-left: 2px;
             }
+            .toolbar-btn:disabled,
+            .toolbar-btn.disabled {
+              cursor: not-allowed;
+              pointer-events: none;
+            }
+            .toolbar-btn:disabled:hover,
+            .toolbar-btn.disabled:hover {
+              background-color: white;
+              border-color: #dee2e6;
+              color: #495057;
+            }
           `}
         </style>
 
         {/* Editor Toolbar */}
         <div className="editor-toolbar">
           <div className="d-flex align-items-center gap-2 flex-wrap">
+            <button
+              className={`toolbar-btn ${historyIndex <= 0 ? 'disabled' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault(); // Prevent losing focus
+                if (historyIndex > 0) {
+                  undo();
+                }
+              }}
+              title="Undo (Ctrl+Z)"
+              disabled={historyIndex <= 0}
+              style={{ opacity: historyIndex <= 0 ? 0.5 : 1 }}
+            >
+              <i className="bi bi-arrow-counterclockwise"></i>
+              <span className="toolbar-shortcut">Ctrl+Z</span>
+            </button>
+            <button
+              className={`toolbar-btn ${historyIndex >= history.length - 1 ? 'disabled' : ''}`}
+              onMouseDown={(e) => {
+                e.preventDefault(); // Prevent losing focus
+                if (historyIndex < history.length - 1) {
+                  redo();
+                }
+              }}
+              title="Redo (Ctrl+Y)"
+              disabled={historyIndex >= history.length - 1}
+              style={{ opacity: historyIndex >= history.length - 1 ? 0.5 : 1 }}
+            >
+              <i className="bi bi-arrow-clockwise"></i>
+              <span className="toolbar-shortcut">Ctrl+Y</span>
+            </button>
+            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
             <button
               className="toolbar-btn"
               data-format="bold"
