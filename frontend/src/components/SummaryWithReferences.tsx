@@ -279,62 +279,66 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   // Insert formatting at cursor position
   const insertFormatting = useCallback((before: string, after: string) => {
     const selection = window.getSelection();
-    if (selection && selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
-      const selectedText = range.toString() || '';
+    if (!selection || selection.rangeCount === 0) {
+      return;
+    }
 
-      // Create a temporary div to hold the formatted HTML
-      const tempDiv = document.createElement('div');
-      let formattedHtml = '';
+    const range = selection.getRangeAt(0);
+    const selectedText = range.toString() || '';
 
-      if (before === '**' && after === '**') {
-        // Bold formatting
-        if (selectedText) {
-          // Check if text is already bold
-          if (isSelectionFormatted(range, 'STRONG')) {
-            // Remove bold formatting by extracting text content
-            formattedHtml = selectedText;
-          } else {
-            // Add bold formatting
-            formattedHtml = `<strong>${selectedText}</strong>`;
-          }
+    // Create a temporary div to hold the formatted HTML
+    const tempDiv = document.createElement('div');
+    let formattedHtml = '';
+
+    if (before === '**' && after === '**') {
+      // Bold formatting
+      if (selectedText) {
+        // Check if text is already bold
+        if (isSelectionFormatted(range, 'STRONG')) {
+          // Remove bold formatting by extracting text content
+          formattedHtml = selectedText;
         } else {
-          // Insert placeholder text for bold when no selection
-          formattedHtml = '<strong>bold text</strong>';
+          // Add bold formatting
+          formattedHtml = `<strong>${selectedText}</strong>`;
         }
-      } else if (before === '*' && after === '*') {
-        // Italic formatting
-        if (selectedText) {
-          // Check if text is already italic
-          if (isSelectionFormatted(range, 'EM')) {
-            // Remove italic formatting by extracting text content
-            formattedHtml = selectedText;
-          } else {
-            // Add italic formatting
-            formattedHtml = `<em>${selectedText}</em>`;
-          }
-        } else {
-          // Insert placeholder text for italic when no selection
-          formattedHtml = '<em>italic text</em>';
-        }
-      } else if (before.startsWith('#')) {
-        // Header formatting
-        const headerLevel = before.length;
-        formattedHtml = `<h${headerLevel}>${selectedText || 'heading'}</h${headerLevel}>`;
-      } else if (before === '- ') {
-        // Bullet list
-        formattedHtml = `<ul><li>${selectedText || 'list item'}</li></ul>`;
-      } else if (before === '1. ') {
-        // Numbered list
-        formattedHtml = `<ol><li>${selectedText || 'list item'}</li></ol>`;
       } else {
-        // Other formatting
-        formattedHtml = selectedText || 'text';
+        // Insert placeholder text for bold when no selection
+        formattedHtml = '<strong>bold text</strong>';
       }
+    } else if (before === '*' && after === '*') {
+      // Italic formatting
+      if (selectedText) {
+        // Check if text is already italic
+        if (isSelectionFormatted(range, 'EM')) {
+          // Remove italic formatting by extracting text content
+          formattedHtml = selectedText;
+        } else {
+          // Add italic formatting
+          formattedHtml = `<em>${selectedText}</em>`;
+        }
+      } else {
+        // Insert placeholder text for italic when no selection
+        formattedHtml = '<em>italic text</em>';
+      }
+    } else if (before.startsWith('#')) {
+      // Header formatting
+      const headerLevel = before.length;
+      formattedHtml = `<h${headerLevel}>${selectedText || 'heading'}</h${headerLevel}>`;
+    } else if (before === '- ') {
+      // Bullet list
+      formattedHtml = `<ul><li>${selectedText || 'list item'}</li></ul>`;
+    } else if (before === '1. ') {
+      // Numbered list
+      formattedHtml = `<ol><li>${selectedText || 'list item'}</li></ol>`;
+    } else {
+      // Other formatting
+      formattedHtml = selectedText || 'text';
+    }
 
-      tempDiv.innerHTML = formattedHtml;
+    tempDiv.innerHTML = formattedHtml;
 
-      // Insert the formatted content
+    // Insert the formatted content
+    try {
       range.deleteContents();
 
       // Insert all child nodes from tempDiv
@@ -344,17 +348,46 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
       range.insertNode(fragment);
 
-      // Move cursor appropriately
+      // Move cursor appropriately - with safety checks
       if (!selectedText && ((before === '**' && after === '**') || (before === '*' && after === '*'))) {
         // For bold/italic with no selection, select the placeholder text
-        range.selectNodeContents(fragment.firstChild || fragment);
+        const firstChild = fragment.firstChild;
+        if (firstChild && firstChild.parentNode) {
+          range.selectNodeContents(firstChild);
+        }
       } else {
         // Move cursor to the end of the inserted content
-        range.setEndAfter(fragment.lastChild || fragment);
-        range.collapse(false); // Collapse to end
+        const lastChild = fragment.lastChild;
+        if (lastChild && lastChild.parentNode) {
+          try {
+            range.setEndAfter(lastChild);
+            range.collapse(false); // Collapse to end
+          } catch (error) {
+            // Fallback: use setStartAfter if setEndAfter fails
+            try {
+              range.setStartAfter(lastChild);
+              range.collapse(true);
+            } catch (fallbackError) {
+              // Final fallback: place cursor at the end of the editor
+              const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
+              if (editor) {
+                const newRange = document.createRange();
+                newRange.selectNodeContents(editor);
+                newRange.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(newRange);
+                return;
+              }
+            }
+          }
+        }
       }
-      selection.removeAllRanges();
-      selection.addRange(range);
+
+      // Ensure range is valid before adding to selection
+      if (range.startContainer && range.endContainer) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
 
       // Trigger input event to update the editor content
       const wysiwygEditor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
@@ -362,6 +395,24 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         // Force a content update
         const inputEvent = new Event('input', { bubbles: true });
         wysiwygEditor.dispatchEvent(inputEvent);
+      }
+    } catch (error) {
+      console.error('Error inserting formatting:', error);
+      // Fallback: try to insert plain text using modern methods
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        const textNode = document.createTextNode(formattedHtml.replace(/<[^>]*>/g, ''));
+        try {
+          range.deleteContents();
+          range.insertNode(textNode);
+          range.selectNodeContents(textNode);
+          range.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        } catch (fallbackError) {
+          console.error('Error inserting fallback text:', fallbackError);
+        }
       }
     }
   }, [isSelectionFormatted]);
@@ -474,9 +525,15 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   // Add keyboard shortcuts and selection listeners
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Only handle shortcuts when not in input fields
+      // Only handle shortcuts when not in input fields (except our editor)
       const target = event.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return;
+      }
+
+      // Additional check: don't handle shortcuts if focus is not in our editor
+      const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
+      if (!editor || !editor.contains(target)) {
         return;
       }
 
@@ -495,18 +552,34 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       // Ctrl+B or Cmd+B for bold
       if ((event.ctrlKey || event.metaKey) && event.key === 'b') {
         event.preventDefault();
-        insertFormatting('**', '**');
+        try {
+          insertFormatting('**', '**');
+        } catch (error) {
+          console.error('Error applying bold formatting:', error);
+        }
       }
 
       // Ctrl+I or Cmd+I for italic
       if ((event.ctrlKey || event.metaKey) && event.key === 'i') {
         event.preventDefault();
-        insertFormatting('*', '*');
+        try {
+          insertFormatting('*', '*');
+        } catch (error) {
+          console.error('Error applying italic formatting:', error);
+        }
       }
     };
 
     const handleSelectionChange = () => {
-      checkToolbarStates();
+      // Only update toolbar states if the selection is within our editor
+      const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
+      const selection = window.getSelection();
+      if (editor && selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        if (editor.contains(range.commonAncestorContainer)) {
+          checkToolbarStates();
+        }
+      }
     };
 
     document.addEventListener('keydown', handleKeyDown);
