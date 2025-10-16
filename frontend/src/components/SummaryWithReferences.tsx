@@ -241,36 +241,160 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     setIsEditing(false);
   }, [htmlToMarkdown, originalContent]);
 
+  // Check if selection is already formatted with the given tag
+  const isSelectionFormatted = useCallback((range: Range, tagName: string): boolean => {
+    // Check if any part of the selection is already wrapped in the specified tag
+    const startContainer = range.startContainer;
+    const endContainer = range.endContainer;
+
+    // Check start container
+    let currentElement = startContainer.nodeType === Node.TEXT_NODE
+      ? startContainer.parentElement
+      : startContainer as Element;
+
+    while (currentElement && currentElement !== document.body) {
+      if (currentElement.tagName === tagName) {
+        return true;
+      }
+      currentElement = currentElement.parentElement;
+    }
+
+    // Check end container if different
+    if (startContainer !== endContainer) {
+      currentElement = endContainer.nodeType === Node.TEXT_NODE
+        ? endContainer.parentElement
+        : endContainer as Element;
+
+      while (currentElement && currentElement !== document.body) {
+        if (currentElement.tagName === tagName) {
+          return true;
+        }
+        currentElement = currentElement.parentElement;
+      }
+    }
+
+    return false;
+  }, []);
+
   // Insert formatting at cursor position
   const insertFormatting = useCallback((before: string, after: string) => {
     const selection = window.getSelection();
     if (selection && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
-      const selectedText = range.toString() || 'text';
+      const selectedText = range.toString() || '';
 
-      // Create a new text node with the formatted content
-      const textNode = document.createTextNode(before + selectedText + after);
+      // Create a temporary div to hold the formatted HTML
+      const tempDiv = document.createElement('div');
+      let formattedHtml = '';
 
-      // Delete the selected content and insert the new text node
+      if (before === '**' && after === '**') {
+        // Bold formatting
+        if (selectedText) {
+          // Check if text is already bold
+          if (isSelectionFormatted(range, 'STRONG')) {
+            // Remove bold formatting by extracting text content
+            formattedHtml = selectedText;
+          } else {
+            // Add bold formatting
+            formattedHtml = `<strong>${selectedText}</strong>`;
+          }
+        } else {
+          // Insert placeholder text for bold when no selection
+          formattedHtml = '<strong>bold text</strong>';
+        }
+      } else if (before === '*' && after === '*') {
+        // Italic formatting
+        if (selectedText) {
+          // Check if text is already italic
+          if (isSelectionFormatted(range, 'EM')) {
+            // Remove italic formatting by extracting text content
+            formattedHtml = selectedText;
+          } else {
+            // Add italic formatting
+            formattedHtml = `<em>${selectedText}</em>`;
+          }
+        } else {
+          // Insert placeholder text for italic when no selection
+          formattedHtml = '<em>italic text</em>';
+        }
+      } else if (before.startsWith('#')) {
+        // Header formatting
+        const headerLevel = before.length;
+        formattedHtml = `<h${headerLevel}>${selectedText || 'heading'}</h${headerLevel}>`;
+      } else if (before === '- ') {
+        // Bullet list
+        formattedHtml = `<ul><li>${selectedText || 'list item'}</li></ul>`;
+      } else if (before === '1. ') {
+        // Numbered list
+        formattedHtml = `<ol><li>${selectedText || 'list item'}</li></ol>`;
+      } else {
+        // Other formatting
+        formattedHtml = selectedText || 'text';
+      }
+
+      tempDiv.innerHTML = formattedHtml;
+
+      // Insert the formatted content
       range.deleteContents();
-      range.insertNode(textNode);
 
-      // Move cursor to the end of the inserted text
-      range.setStartAfter(textNode);
-      range.setEndAfter(textNode);
+      // Insert all child nodes from tempDiv
+      const fragment = document.createDocumentFragment();
+      while (tempDiv.firstChild) {
+        fragment.appendChild(tempDiv.firstChild);
+      }
+      range.insertNode(fragment);
+
+      // Move cursor appropriately
+      if (!selectedText && ((before === '**' && after === '**') || (before === '*' && after === '*'))) {
+        // For bold/italic with no selection, select the placeholder text
+        range.selectNodeContents(fragment.firstChild || fragment);
+      } else {
+        // Move cursor to the end of the inserted content
+        range.setEndAfter(fragment.lastChild || fragment);
+        range.collapse(false); // Collapse to end
+      }
       selection.removeAllRanges();
       selection.addRange(range);
 
-      // Auto-save after formatting
+      // Trigger input event to update the editor content
       const wysiwygEditor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
       if (wysiwygEditor) {
-        const htmlContent = wysiwygEditor.innerHTML;
-        const markdownContent = htmlToMarkdown(htmlContent);
-        setEditedContent(markdownContent);
-        setHasChanges(markdownContent !== originalContent);
+        // Force a content update
+        const inputEvent = new Event('input', { bubbles: true });
+        wysiwygEditor.dispatchEvent(inputEvent);
       }
     }
-  }, [htmlToMarkdown, originalContent]);
+  }, [isSelectionFormatted]);
+
+  // Check toolbar button states based on current selection
+  const checkToolbarStates = useCallback(() => {
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0) {
+      const range = selection.getRangeAt(0);
+      const isBold = isSelectionFormatted(range, 'STRONG');
+      const isItalic = isSelectionFormatted(range, 'EM');
+
+      // Update toolbar button states
+      const boldBtn = document.querySelector('.toolbar-btn[data-format="bold"]');
+      const italicBtn = document.querySelector('.toolbar-btn[data-format="italic"]');
+
+      if (boldBtn) {
+        if (isBold) {
+          boldBtn.classList.add('active');
+        } else {
+          boldBtn.classList.remove('active');
+        }
+      }
+
+      if (italicBtn) {
+        if (isItalic) {
+          italicBtn.classList.add('active');
+        } else {
+          italicBtn.classList.remove('active');
+        }
+      }
+    }
+  }, [isSelectionFormatted]);
 
   // Insert transcript reference
   const insertReference = useCallback(() => {
@@ -347,9 +471,15 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
   }, [editedContent, getHtmlContent, isInitialized, isEditing]);
 
-  // Add keyboard shortcuts
+  // Add keyboard shortcuts and selection listeners
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Only handle shortcuts when not in input fields
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return;
+      }
+
       // Ctrl+S or Cmd+S to save
       if ((event.ctrlKey || event.metaKey) && event.key === 's') {
         event.preventDefault();
@@ -361,14 +491,32 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           });
         }
       }
+
+      // Ctrl+B or Cmd+B for bold
+      if ((event.ctrlKey || event.metaKey) && event.key === 'b') {
+        event.preventDefault();
+        insertFormatting('**', '**');
+      }
+
+      // Ctrl+I or Cmd+I for italic
+      if ((event.ctrlKey || event.metaKey) && event.key === 'i') {
+        event.preventDefault();
+        insertFormatting('*', '*');
+      }
+    };
+
+    const handleSelectionChange = () => {
+      checkToolbarStates();
     };
 
     document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('selectionchange', handleSelectionChange);
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('selectionchange', handleSelectionChange);
     };
-  }, [hasChanges, editedContent, originalContent, saveSummary]);
+  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting]);
 
 
   if (!summary) {
@@ -511,10 +659,9 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               position: sticky;
               top: 0;
               z-index: 10;
-              background: white;
-              border-bottom: 1px solid #dee2e6;
+              background: #f8f9fa;
+              border-bottom: 1px solid #e9ecef;
               padding: 8px 16px;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }
             .toolbar-btn {
               border: 1px solid #dee2e6;
@@ -525,18 +672,27 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               cursor: pointer;
               color: #495057;
               font-size: 0.8rem;
-              transition: all 0.2s ease;
+              transition: none;
             }
             .toolbar-btn:hover {
-              background-color: #f8f9fa;
+              background-color: #f1f3f5;
               border-color: #adb5bd;
               color: #212529;
-              transform: translateY(-1px);
+            }
+            .toolbar-btn:focus {
+              outline: 2px solid #007bff;
+              outline-offset: 2px;
             }
             .toolbar-btn.active {
               background-color: #007bff;
               border-color: #007bff;
               color: white;
+              box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+            }
+            .toolbar-shortcut {
+              font-size: 0.65rem;
+              opacity: 0.7;
+              margin-left: 2px;
             }
           `}
         </style>
@@ -544,11 +700,13 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         {/* Editor Toolbar */}
         <div className="editor-toolbar">
           <div className="d-flex align-items-center gap-2 flex-wrap">
-            <button className="toolbar-btn" onClick={() => insertFormatting('**', '**')} title="Bold">
+            <button className="toolbar-btn" data-format="bold" onClick={() => insertFormatting('**', '**')} title="Bold (Ctrl+B)">
               <i className="bi bi-type-bold"></i>
+              <span className="toolbar-shortcut">Ctrl+B</span>
             </button>
-            <button className="toolbar-btn" onClick={() => insertFormatting('*', '*')} title="Italic">
+            <button className="toolbar-btn" data-format="italic" onClick={() => insertFormatting('*', '*')} title="Italic (Ctrl+I)">
               <i className="bi bi-type-italic"></i>
+              <span className="toolbar-shortcut">Ctrl+I</span>
             </button>
             <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
             <button className="toolbar-btn" onClick={() => insertFormatting('## ', '')} title="Heading 2">
@@ -565,7 +723,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               <i className="bi bi-list-ol"></i>
             </button>
             <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference" style={{background: '#007bff', color: 'white', borderColor: '#007bff'}}>
+            <button className="toolbar-btn" onClick={() => insertReference()} title="Insert Transcript Reference" style={{background: '#6c757d', color: 'white', borderColor: '#6c757d'}}>
               <i className="bi bi-link-45deg"></i> Ref
             </button>
           </div>
