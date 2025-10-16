@@ -53,3 +53,163 @@ export const sendAssistantChat = async (messages: ChatMessagePayload[], systemPr
     });
     return response.data;
 };
+
+// 流式聊天接口
+export const sendAssistantChatStream = async (
+    messages: ChatMessagePayload[],
+    systemPrompt?: string,
+    onChunk?: (chunk: string) => void,
+    onComplete?: () => void,
+    onError?: (error: string) => void
+) => {
+    try {
+        const token = localStorage.getItem('token');
+        console.log('🔐 Token:', token ? `${token.substring(0, 20)}...` : 'null');
+
+        const requestData = {
+            messages,
+            systemPrompt,
+        };
+        console.log('📤 发送流式聊天请求:', requestData);
+
+        const response = await fetch(`${API_SERVER_URL}/assistant/chat/stream`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+                'Accept': 'text/plain',
+                'Cache-Control': 'no-cache',
+            },
+            body: JSON.stringify(requestData),
+        });
+
+        console.log('📥 收到响应:', {
+            status: response.status,
+            statusText: response.statusText,
+            headers: Object.fromEntries(response.headers.entries())
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ 响应错误:', errorText);
+            throw new Error(`HTTP error! status: ${response.status}, detail: ${errorText}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+            throw new Error('No response body');
+        }
+
+        let accumulatedContent = '';
+        let buffer = '';
+        let streamActive = true;
+        let streamCompleted = false;
+        let streamFailed = false;
+
+        const processBuffer = () => {
+            while (streamActive) {
+                const eventBoundary = buffer.indexOf('\n\n');
+                if (eventBoundary === -1) {
+                    break;
+                }
+
+                const eventBlock = buffer.slice(0, eventBoundary);
+                buffer = buffer.slice(eventBoundary + 2);
+
+                const lines = eventBlock.split('\n');
+                for (const rawLine of lines) {
+                    const line = rawLine.trim();
+                    if (!line.startsWith('data:')) {
+                        continue;
+                    }
+
+                    const payload = line.slice(5).trimStart();
+                    if (!payload) {
+                        continue;
+                    }
+
+                    try {
+                        const data = JSON.parse(payload);
+
+                        if (data.error) {
+                            streamFailed = true;
+                            streamActive = false;
+                            onError?.(data.error);
+                            return;
+                        }
+
+                        if (data.content) {
+                            accumulatedContent += data.content;
+                            onChunk?.(data.content);
+                        }
+
+                        if (data.done) {
+                            streamCompleted = true;
+                            streamActive = false;
+                            onComplete?.();
+                            return;
+                        }
+                    } catch (parseError) {
+                        console.error('Failed to parse SSE data:', parseError, payload);
+                    }
+                }
+            }
+        };
+
+        while (streamActive) {
+            const { done, value } = await reader.read();
+
+            if (done) {
+                buffer += decoder.decode();
+                processBuffer();
+                break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            processBuffer();
+        }
+
+        if (streamActive) {
+            // Stream ended unexpectedly without explicit done/error marker
+            const remaining = buffer.trim();
+            if (remaining) {
+                try {
+                    const data = JSON.parse(remaining.replace(/^data:\s*/, ''));
+                    if (data.content) {
+                        accumulatedContent += data.content;
+                        onChunk?.(data.content);
+                    }
+                } catch {
+                    // Ignore residual parsing issues
+                }
+            }
+            streamActive = false;
+        }
+
+        try {
+            await reader.cancel();
+        } catch {
+            // Ignore cancellation errors
+        }
+
+        if (!streamCompleted && !streamFailed) {
+            onComplete?.();
+        }
+
+        return accumulatedContent;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        onError?.(errorMessage);
+        throw error;
+    }
+};
+
+// 摘要生成接口（非流式）
+export const generateSummary = async (jobId: number, language: string = "Chinese") => {
+    const response = await apiClient.post(`/jobs/${jobId}/summarize`, {
+        target_language: language
+    });
+    return response.data;
+};

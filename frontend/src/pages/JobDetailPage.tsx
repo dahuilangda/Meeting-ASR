@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { apiClient } from '../api';
+import { apiClient, generateSummary } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { SummaryWithReferences } from '../components/SummaryWithReferences';
 import { AssistantChat } from '../components/AssistantChat';
@@ -165,20 +165,14 @@ export function JobDetailPage() {
         window.location.hash = activeTab;
     }, [activeTab]);
 
+    
     const handleSummarize = async () => {
         if (!jobId) return;
         setActiveTab('summary'); // Switch to summary tab immediately
         setIsSummarizing(true);
         try {
-            const response = await apiClient.post(`/jobs/${jobId}/summarize`, {
-                target_language: targetLanguage
-            }, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-            const jobData = response.data as JobDetails;
-            setJob(jobData); // Update job with summary
+            const jobData = await generateSummary(parseInt(jobId), targetLanguage);
+            setJob(jobData as JobDetails); // Update job with summary
         } catch (err: unknown) {
             console.error("Summarization failed", err);
             let errorMessage = 'Unknown error';

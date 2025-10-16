@@ -61,3 +61,5 @@ Thumbs.db
 backend/sqlite.db.backup.20251016_152923
 backend/.env
 backend/test_warnings.py
+test_*
+debug*

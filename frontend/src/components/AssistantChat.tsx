@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ChatMessagePayload, ChatResponse, sendAssistantChat } from '../api';
+import { ChatMessagePayload, sendAssistantChatStream } from '../api';
 
 export interface AssistantChatJobContext {
   id: number;
@@ -106,12 +106,50 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
       const history: ChatMessagePayload[] = [...messages, userMessage]
         .map(({ role, content }) => ({ role, content }));
 
-      const response: ChatResponse = await sendAssistantChat(history, systemPrompt);
-      appendMessage({
-        id: `assistant-${Date.now()}`,
+      // 创建一个临时的助手消息用于实时更新
+      const assistantMessageId = `assistant-${Date.now()}`;
+      const assistantMessage: ConversationMessage = {
+        id: assistantMessageId,
         role: 'assistant',
-        content: response.reply
-      });
+        content: '',
+      };
+      appendMessage(assistantMessage);
+
+      // 使用流式API
+      console.log('🚀 开始流式聊天调用');
+      await sendAssistantChatStream(
+        history,
+        systemPrompt,
+        // onChunk - 接收到内容块时的回调
+        (chunk: string) => {
+          console.log('📝 收到内容块:', chunk);
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: msg.content + chunk }
+              : msg
+          ));
+        },
+        // onComplete - 流式完成时的回调
+        () => {
+          console.log('✅ 流式聊天完成');
+          setIsSending(false);
+        },
+        // onError - 错误处理
+        (error: string) => {
+          console.error('❌ Stream chat failed', error);
+          const friendlyError = error || 'Unable to get assistant response, please try again later.';
+          setError(friendlyError);
+
+          // 更新助手消息为错误信息
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: 'Sorry, I am currently unable to process this request. Please try again later.' }
+              : msg
+          ));
+          setIsSending(false);
+        }
+      );
+
     } catch (err) {
       console.error('Assistant chat failed', err);
       const friendlyError = err instanceof Error ? err.message : 'Unable to get assistant response, please try again later.';
@@ -121,7 +159,6 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         role: 'assistant',
         content: 'Sorry, I am currently unable to process this request. Please try again later.'
       });
-    } finally {
       setIsSending(false);
     }
   };
@@ -351,9 +388,55 @@ export const AssistantChat: React.FC<AssistantChatProps> = ({ job, onClose }) =>
         <div ref={scrollRef} className="flex-grow-1 px-3 py-2" style={{ overflowY: 'auto', fontSize: '0.85rem', backgroundColor: '#fff' }}>
           {messages.map(message => (
             <div key={message.id} className={`d-flex mb-2 ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}>
-              <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'}`} style={{ maxWidth: '90%' }}>
+              <div className={`p-2 rounded-3 ${message.role === 'user' ? 'bg-primary text-white' : 'bg-light border'} position-relative`} style={{ maxWidth: '90%' }}>
                 {message.role === 'assistant' ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  <>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                    {/* 流式响应的打字指示器 */}
+                    {message.content && isSending && messages[messages.length - 1]?.id === message.id && (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          marginLeft: '2px'
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: '4px',
+                            height: '4px',
+                            borderRadius: '50%',
+                            backgroundColor: '#6c757d',
+                            margin: '0 1px',
+                            animation: 'typing 1.4s infinite',
+                            animationDelay: '0s'
+                          }}
+                        />
+                        <span
+                          style={{
+                            width: '4px',
+                            height: '4px',
+                            borderRadius: '50%',
+                            backgroundColor: '#6c757d',
+                            margin: '0 1px',
+                            animation: 'typing 1.4s infinite',
+                            animationDelay: '0.2s'
+                          }}
+                        />
+                        <span
+                          style={{
+                            width: '4px',
+                            height: '4px',
+                            borderRadius: '50%',
+                            backgroundColor: '#6c757d',
+                            margin: '0 1px',
+                            animation: 'typing 1.4s infinite',
+                            animationDelay: '0.4s'
+                          }}
+                        />
+                      </span>
+                    )}
+                  </>
                 ) : (
                   message.content.split('\n').map((line, idx) => (
                     <span key={idx}>

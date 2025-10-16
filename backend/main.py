@@ -1,5 +1,6 @@
 from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ import json
 import re
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
@@ -1315,6 +1317,99 @@ async def assistant_chat(request: ChatRequest, current_user: schemas.User = Depe
         print(f"Error in assistant_chat: {e}")
         raise HTTPException(status_code=500, detail=f"Assistant chat failed: {e}")
 
+@app.post("/assistant/chat/stream")
+async def assistant_chat_stream(request: ChatRequest, current_user: schemas.User = Depends(get_current_user)):
+    """流式会议助手聊天接口"""
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="At least one message is required.")
+
+    client = create_openai_client()
+    conversation: List[dict] = []
+
+    system_prompt = (request.system_prompt or
+        "You are a knowledgeable meeting assistant who helps users understand transcripts, summaries, and provides actionable guidance. Provide concise, helpful answers.").strip()
+
+    if system_prompt:
+        conversation.append({"role": "system", "content": system_prompt})
+
+    has_user_message = False
+    for message in request.messages:
+        role = (message.role or "user").lower()
+        if role not in {"user", "assistant", "system"}:
+            role = "user"
+        content = (message.content or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            has_user_message = True
+        conversation.append({"role": role, "content": content})
+
+    if not has_user_message:
+        raise HTTPException(status_code=400, detail="Chat requires at least one user message.")
+
+    async def generate_stream():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel_done = object()
+        sentinel_error = object()
+
+        def stream_worker():
+            try:
+                stream = client.chat.completions.create(
+                    messages=conversation,
+                    model=os.getenv("OPENAI_MODEL_NAME"),
+                    timeout=600,
+                    temperature=0.4,
+                    stream=True
+                )
+
+                for chunk in stream:
+                    try:
+                        choice = chunk.choices[0]
+                    except (IndexError, AttributeError):
+                        continue
+
+                    delta = getattr(choice, "delta", None)
+                    if not delta:
+                        continue
+
+                    content = getattr(delta, "content", None)
+                    if content:
+                        asyncio.run_coroutine_threadsafe(queue.put(content), loop)
+
+                asyncio.run_coroutine_threadsafe(queue.put(sentinel_done), loop)
+            except Exception as worker_error:
+                print(f"Error in stream worker: {worker_error}")
+                asyncio.run_coroutine_threadsafe(queue.put((sentinel_error, str(worker_error))), loop)
+
+        threading.Thread(target=stream_worker, daemon=True).start()
+
+        while True:
+            item = await queue.get()
+
+            if item is sentinel_done:
+                yield "data: {\"done\": true}\n\n"
+                break
+
+            if isinstance(item, tuple) and item and item[0] is sentinel_error:
+                _, error_message = item
+                yield f"data: {json.dumps({'error': error_message}, ensure_ascii=False)}\n\n"
+                break
+
+            yield f"data: {json.dumps({'content': item}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control, Authorization",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 @app.post("/jobs/{job_id}/optimize_segment", response_model=dict)
 async def optimize_segment(job_id: int, request: dict, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Verify that the job belongs to the current user
@@ -1389,11 +1484,45 @@ async def optimize_segment(job_id: int, request: dict, current_user: schemas.Use
         
         optimized_text = chat_completion.choices[0].message.content
         return {"optimized_text": optimized_text}
-        
+
     except Exception as e:
         print(f"Error optimizing segment: {e}")
         # If LLM optimization fails, return the original text
         return {"optimized_text": text}
+
+def parse_transcript_segments(transcript_text):
+    """解析转录文本为段落列表，用于摘要生成中的引用编号"""
+    if not transcript_text:
+        return []
+
+    segments = []
+    lines = transcript_text.split('\n')
+
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if line:  # 跳过空行
+            # 尝试提取说话者和内容
+            match = re.match(r'^\[([^\]]+)\]\s*(.+)$', line)
+            if match and match.group(2).strip():
+                segments.append({
+                    'index': len(segments) + 1,
+                    'speaker': match.group(1),
+                    'text': match.group(2).strip(),
+                    'start_time': 0,
+                    'end_time': 0
+                })
+            elif not segments:  # 如果没有说话者标记且是第一行
+                segments.append({
+                    'index': len(segments) + 1,
+                    'speaker': 'Unknown',
+                    'text': line,
+                    'start_time': 0,
+                    'end_time': 0
+                })
+            else:  # 附加到最后一个段落
+                segments[-1]['text'] += ' ' + line
+
+    return segments
 
 def format_reference_links(references):
     """Format reference numbers with consecutive ranges like [1], [2-3], [5-7]"""
