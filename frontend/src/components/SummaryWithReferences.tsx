@@ -61,6 +61,19 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [isUnmounted, setIsUnmounted] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
+  // Safe DOM operation wrapper
+  const safeSetInnerHTML = useCallback((element: HTMLElement | null, html: string) => {
+    if (!element || isUnmounted) return false;
+
+    try {
+      element.innerHTML = html;
+      return true;
+    } catch (error) {
+      console.warn('Error setting innerHTML:', error);
+      return false;
+    }
+  }, [isUnmounted]);
+
   // Undo/Redo state management
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -155,7 +168,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
   };
 
-  // Convert markdown to HTML for WYSIWYG editor
+  // Convert markdown to HTML for WYSIWYG editor with improved line break handling
   const getHtmlContent = useCallback(() => {
     if (!editedContent.trim()) {
       return '<p><br></p>';
@@ -167,89 +180,145 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     const lines = html.split('\n');
     let processedLines: string[] = [];
     let i = 0;
+    let currentParagraph: string[] = [];
+    let inParagraph = false;
 
     while (i < lines.length) {
       const line = lines[i];
+      const trimmedLine = line.trim();
 
       // Handle headers
-      if (line.startsWith('###### ')) {
-        processedLines.push(`<h6>${line.substring(7)}</h6>`);
-      } else if (line.startsWith('##### ')) {
-        processedLines.push(`<h5>${line.substring(6)}</h5>`);
-      } else if (line.startsWith('#### ')) {
-        processedLines.push(`<h4>${line.substring(5)}</h4>`);
-      } else if (line.startsWith('### ')) {
-        processedLines.push(`<h3>${line.substring(4)}</h3>`);
-      } else if (line.startsWith('## ')) {
-        processedLines.push(`<h2>${line.substring(3)}</h2>`);
-      } else if (line.startsWith('# ')) {
-        processedLines.push(`<h1>${line.substring(2)}</h1>`);
+      if (trimmedLine.startsWith('###### ')) {
+        // Close current paragraph if open
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h6>${trimmedLine.substring(7)}</h6>`);
+      } else if (trimmedLine.startsWith('##### ')) {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h5>${trimmedLine.substring(6)}</h5>`);
+      } else if (trimmedLine.startsWith('#### ')) {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h4>${trimmedLine.substring(5)}</h4>`);
+      } else if (trimmedLine.startsWith('### ')) {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h3>${trimmedLine.substring(4)}</h3>`);
+      } else if (trimmedLine.startsWith('## ')) {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h2>${trimmedLine.substring(3)}</h2>`);
+      } else if (trimmedLine.startsWith('# ')) {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        processedLines.push(`<h1>${trimmedLine.substring(2)}</h1>`);
       }
       // Handle list items
-      else if (line.match(/^(\d+)\. .+$/)) {
+      else if (trimmedLine.match(/^(\d+)\. .+$/)) {
+        // Close current paragraph if open
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+
         let listItems = [];
         // Collect consecutive numbered list items
-        while (i < lines.length && lines[i].match(/^(\d+)\. .+$/)) {
-          listItems.push(`<li>${lines[i].replace(/^(\d+)\. /, '$1. ')}</li>`);
+        while (i < lines.length && lines[i].trim().match(/^(\d+)\. .+$/)) {
+          const listLine = lines[i].trim();
+          const formattedListLine = listLine
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
+          listItems.push(`<li>${formattedListLine.replace(/^(\d+)\. /, '$1. ')}</li>`);
           i++;
         }
         processedLines.push(`<ol>${listItems.join('')}</ol>`);
         continue; // Skip the i++ since we already incremented it
       }
-      else if (line.startsWith('- ')) {
+      else if (trimmedLine.startsWith('- ')) {
+        // Close current paragraph if open
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+
         let listItems = [];
         // Collect consecutive bullet list items
-        while (i < lines.length && lines[i].startsWith('- ')) {
-          listItems.push(`<li>${lines[i].substring(2)}</li>`);
+        while (i < lines.length && lines[i].trim().startsWith('- ')) {
+          const listLine = lines[i].trim();
+          const formattedListLine = listLine
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
+          listItems.push(`<li>${formattedListLine.substring(2)}</li>`);
           i++;
         }
         processedLines.push(`<ul>${listItems.join('')}</ul>`);
         continue; // Skip the i++ since we already incremented it
       }
-      // Handle empty lines
-      else if (line.trim() === '') {
-        // Add paragraph break
-        if (processedLines.length > 0 && !processedLines[processedLines.length - 1].match(/^<h[1-6]>/) &&
-            !processedLines[processedLines.length - 1].endsWith('</ul>') &&
-            !processedLines[processedLines.length - 1].endsWith('</ol>')) {
-          processedLines.push('</p><p>');
+      // Handle empty lines (paragraph breaks)
+      else if (trimmedLine === '') {
+        if (inParagraph && currentParagraph.length > 0) {
+          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
+          currentParagraph = [];
+          inParagraph = false;
+        }
+        // Only add empty paragraph if this is not the last line or if we have multiple consecutive empty lines
+        // This prevents creating unnecessary empty paragraphs at the end
+        if (i < lines.length - 1 || (i < lines.length - 2 && lines[i + 1]?.trim() === '')) {
+          processedLines.push('<p><br></p>');
         }
       }
-      // Handle regular text
+      // Handle regular text (part of paragraph)
       else {
-        // Apply formatting to regular text
         let formattedLine = line
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/\*(.+?)\*/g, '<em>$1</em>')
           .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
 
-        processedLines.push(formattedLine);
+        currentParagraph.push(formattedLine);
+        inParagraph = true;
       }
 
       i++;
     }
 
-    // Join the processed lines and wrap in paragraphs
-    let finalHtml = processedLines.join('<br>');
-
-    // If the content doesn't start with a header or list, wrap it in paragraphs
-    if (!finalHtml.startsWith('<h') && !finalHtml.startsWith('<ul>') && !finalHtml.startsWith('<ol>')) {
-      finalHtml = '<p>' + finalHtml + '</p>';
+    // Close any open paragraph at the end
+    if (inParagraph && currentParagraph.length > 0) {
+      processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
     }
 
-    // Clean up double paragraphs and ensure proper structure
-    finalHtml = finalHtml
-      .replace(/<\/p><p><br>/g, '</p><p>')
-      .replace(/<p>(<h[1-6]>)/g, '$1')
-      .replace(/(<\/h[1-6]>)<\/p>/g, '$1')
-      .replace(/<p>(<ul>|<ol>)/g, '$1')
-      .replace(/(<\/ul>|<\/ol>)<\/p>/g, '$1')
-      .replace(/<p><\/p>/g, '<p><br></p>');
+    // Join all processed content
+    let finalHtml = processedLines.join('');
+
+    // Clean up any double empty paragraphs
+    finalHtml = finalHtml.replace(/<p><br><\/p><p><br><\/p>/g, '<p><br></p>');
 
     return finalHtml;
   }, [editedContent]);
 
-  // Convert HTML back to markdown
+  // Convert HTML back to markdown with improved line break handling
   const htmlToMarkdown = useCallback((html: string): string => {
     if (!html) return '';
 
@@ -273,26 +342,37 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       .replace(/<ul>(.*?)<\/ul>/gis, (match, content) => {
         return content.replace(/<li>(.+?)<\/li>/gi, '- $1\n');
       })
-      // Handle paragraphs - convert to line breaks
-      .replace(/<\/p>/g, '\n\n')
-      .replace(/<p>/g, '')
-      // Handle line breaks - convert to single line breaks
+      // Handle paragraphs with better line break preservation
+      .replace(/<p>(.*?)<\/p>/gis, (match, content) => {
+        // If paragraph is empty or contains only <br>, treat it as paragraph break (no extra content)
+        if (!content.trim() || content.trim() === '<br>' || content.trim() === '<br/>') {
+          return '\n\n'; // Just paragraph break, no extra empty lines
+        }
+        // For regular paragraphs, preserve internal line breaks and add paragraph breaks
+        const processedContent = content
+          .replace(/<br\s*\/?>/gi, '\n') // Convert <br> to line breaks within paragraph
+          .replace(/&nbsp;/g, ' ') // Convert &nbsp; to regular spaces
+          .trim();
+        return processedContent + '\n\n';
+      })
+      // Handle remaining line breaks
       .replace(/<br\s*\/?>/gi, '\n')
-      // Handle div separators
+      // Handle div separators (common in contentEditable)
       .replace(/<\/div>/gi, '\n')
       .replace(/<div[^>]*>/gi, '')
       // Clean up HTML entities
-      .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
-      // Clean up extra whitespace but preserve paragraph structure
+      // Advanced line break normalization
       .replace(/\n{4,}/g, '\n\n\n') // Limit to max 3 consecutive line breaks
-      .replace(/[ \t]+$/gm, '') // Remove trailing spaces
+      .replace(/[ \t]+$/gm, '') // Remove trailing spaces from each line
       .replace(/^\s+|\s+$/g, '') // Trim leading/trailing whitespace
       .replace(/\n[ \t]+\n/g, '\n\n') // Clean lines with only whitespace
-      .replace(/\n{3,}/g, '\n\n'); // Finally, ensure max 2 consecutive line breaks
+      .replace(/\n{3,}/g, '\n\n') // Ensure max 2 consecutive line breaks
+      // Final cleanup: ensure no empty paragraphs at start/end
+      .replace(/^\n+|\n+$/g, '');
 
     return markdown;
   }, []);
@@ -334,10 +414,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       const editor = editorRef.current;
       if (editor) {
         const htmlContent = getHtmlContent();
-        editor.innerHTML = htmlContent;
+        safeSetInnerHTML(editor, htmlContent);
       }
     }
-  }, [historyIndex, history, originalContent, getHtmlContent]);
+  }, [historyIndex, history, originalContent, getHtmlContent, safeSetInnerHTML]);
 
   // Redo function
   const redo = useCallback(() => {
@@ -352,10 +432,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       const editor = editorRef.current;
       if (editor) {
         const htmlContent = getHtmlContent();
-        editor.innerHTML = htmlContent;
+        safeSetInnerHTML(editor, htmlContent);
       }
     }
-  }, [historyIndex, history, originalContent, getHtmlContent]);
+  }, [historyIndex, history, originalContent, getHtmlContent, safeSetInnerHTML]);
 
   // Handle WYSIWYG input with auto-save
   const handleWysiwygInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
@@ -381,12 +461,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     if (markdownContent !== editedContent) {
       // Use requestAnimationFrame to avoid blocking the input thread
       requestAnimationFrame(() => {
-        setEditedContent(markdownContent);
-        setHasChanges(markdownContent !== originalContent);
-        addToHistory(markdownContent);
+        if (!isUnmounted) {
+          setEditedContent(markdownContent);
+          setHasChanges(markdownContent !== originalContent);
+          addToHistory(markdownContent);
+        }
       });
     }
-  }, [htmlToMarkdown, originalContent, editedContent, addToHistory]);
+  }, [htmlToMarkdown, originalContent, editedContent, addToHistory, isUnmounted]);
 
   // Handle focus to track editing state
   const handleEditorFocus = useCallback(() => {
@@ -397,6 +479,9 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const handleEditorBlur = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
     // Small delay to allow related target to be properly set
     setTimeout(() => {
+      // Check if component is still mounted
+      if (isUnmounted) return;
+
       // Check if focus moved outside the editor
       const editor = editorRef.current;
       if (editor && !editor.contains(document.activeElement)) {
@@ -404,12 +489,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         const htmlContent = target.innerHTML;
         const markdownContent = htmlToMarkdown(htmlContent);
 
-        setEditedContent(markdownContent);
-        setHasChanges(markdownContent !== originalContent);
-        setIsEditing(false);
+        if (!isUnmounted) {
+          setEditedContent(markdownContent);
+          setHasChanges(markdownContent !== originalContent);
+          setIsEditing(false);
+        }
       }
     }, 10);
-  }, [htmlToMarkdown, originalContent]);
+  }, [htmlToMarkdown, originalContent, isUnmounted]);
 
   // Check if selection is already formatted with the given tag
   const isSelectionFormatted = useCallback((range: Range, tagName: string): boolean => {
@@ -616,19 +703,26 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
       // Also update the content state and add to history after formatting
       setTimeout(() => {
+        // Check if component is still mounted
+        if (isUnmounted) return;
+
         const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-        if (editor) {
-          const newHtmlContent = editor.innerHTML;
-          const newMarkdownContent = htmlToMarkdown(newHtmlContent);
-          if (newMarkdownContent !== editedContent) {
-            setEditedContent(newMarkdownContent);
-            setHasChanges(newMarkdownContent !== originalContent);
-            addToHistory(newMarkdownContent);
+        if (editor && !isUnmounted) {
+          try {
+            const newHtmlContent = editor.innerHTML;
+            const newMarkdownContent = htmlToMarkdown(newHtmlContent);
+            if (newMarkdownContent !== editedContent && !isUnmounted) {
+              setEditedContent(newMarkdownContent);
+              setHasChanges(newMarkdownContent !== originalContent);
+              addToHistory(newMarkdownContent);
+            }
+          } catch (error) {
+            console.warn('Error updating content after formatting:', error);
           }
         }
       }, 50);
     }, 10); // Small delay to ensure focus is restored
-  }, [isSelectionFormatted, restoreEditorFocus, editedContent, originalContent, htmlToMarkdown, addToHistory]);
+  }, [isSelectionFormatted, restoreEditorFocus, editedContent, originalContent, htmlToMarkdown, addToHistory, isUnmounted]);
 
   // Check toolbar button states based on current selection
   const checkToolbarStates = useCallback(() => {
@@ -695,9 +789,16 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
       // Force re-render after successful save
       setTimeout(() => {
+        // Check if component is still mounted
+        if (isUnmounted) return;
+
         const editor = editorRef.current;
-        if (editor) {
-          editor.innerHTML = getHtmlContent();
+        if (editor && !isUnmounted) {
+          try {
+            editor.innerHTML = getHtmlContent();
+          } catch (error) {
+            console.warn('Error re-rendering after save:', error);
+          }
         }
       }, 100);
 
@@ -706,37 +807,53 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       console.error('Error saving summary:', error);
       return false;
     }
-  }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent]);
+  }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent, isUnmounted]);
 
   // Initialize editor content when summary changes or when editor is ready
   useEffect(() => {
+    if (isUnmounted) return;
+
     const editor = editorRef.current;
     if (editor && editedContent && !isInitialized) {
       const htmlContent = getHtmlContent();
 
       // Only set content if the editor doesn't have focus
       if (!editor.contains(document.activeElement)) {
-        editor.innerHTML = htmlContent;
+        try {
+          editor.innerHTML = htmlContent;
+        } catch (error) {
+          console.warn('Error setting initial editor content:', error);
+        }
       }
 
-      setIsInitialized(true);
+      if (!isUnmounted) {
+        setIsInitialized(true);
+      }
     }
-  }, [editedContent, getHtmlContent, isInitialized]);
+  }, [editedContent, getHtmlContent, isInitialized, isUnmounted]);
 
   // Also ensure content is rendered when component mounts or ref is set
   useEffect(() => {
+    if (isUnmounted) return;
+
     const editor = editorRef.current;
     if (editor && editedContent && !isInitialized) {
       const htmlContent = getHtmlContent();
 
       // Only set content if the editor doesn't have focus
       if (!editor.contains(document.activeElement)) {
-        editor.innerHTML = htmlContent;
+        try {
+          editor.innerHTML = htmlContent;
+        } catch (error) {
+          console.warn('Error setting editor content on mount:', error);
+        }
       }
 
-      setIsInitialized(true);
+      if (!isUnmounted) {
+        setIsInitialized(true);
+      }
     }
-  }, [editorRef, editedContent, getHtmlContent, isInitialized]);
+  }, [editorRef, editedContent, getHtmlContent, isInitialized, isUnmounted]);
 
   // Prevent content from being overwritten by React's reconciliation
   useEffect(() => {
@@ -786,20 +903,55 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         return;
       }
 
-      // Handle Enter key for proper line breaks
-      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-        // Let the browser handle Enter naturally for contentEditable
-        // We'll process the resulting HTML in handleWysiwygInput
-        // Don't prevent default - let it create the line break
-        setTimeout(() => {
-          // Force content update after Enter key with a delay to preserve focus
-          if (editor && editor.contains(document.activeElement)) {
-            requestAnimationFrame(() => {
-              const inputEvent = new Event('input', { bubbles: true });
-              editor.dispatchEvent(inputEvent);
-            });
-          }
-        }, 0);
+      // Handle Enter key for Word-like behavior
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (event.shiftKey) {
+          // Shift+Enter = line break (like Word)
+          // Let browser handle it naturally - creates <br>
+          setTimeout(() => {
+            if (!isUnmounted && editor && editor.contains(document.activeElement)) {
+              requestAnimationFrame(() => {
+                if (!isUnmounted && editor) {
+                  try {
+                    const inputEvent = new Event('input', { bubbles: true });
+                    editor.dispatchEvent(inputEvent);
+                  } catch (error) {
+                    console.warn('Error handling Shift+Enter:', error);
+                  }
+                }
+              });
+            }
+          }, 0);
+        } else {
+          // Regular Enter = new paragraph (like Word)
+          // Let the browser handle Enter naturally to create proper paragraphs
+          // Don't prevent default - let browser create <p> elements naturally
+
+          // Add a small delay to normalize the DOM structure after browser handles Enter
+          setTimeout(() => {
+            if (!isUnmounted && editor && editor.contains(document.activeElement)) {
+              requestAnimationFrame(() => {
+                if (!isUnmounted && editor) {
+                  try {
+                    // Normalize any empty paragraphs created by the browser
+                    const paragraphs = editor.querySelectorAll('p');
+                    paragraphs.forEach(p => {
+                      if (!p.innerHTML.trim()) {
+                        // Empty paragraph needs a <br> to be visible in contentEditable
+                        p.innerHTML = '<br>';
+                      }
+                    });
+
+                    const inputEvent = new Event('input', { bubbles: true });
+                    editor.dispatchEvent(inputEvent);
+                  } catch (error) {
+                    console.warn('Error normalizing paragraphs after Enter:', error);
+                  }
+                }
+              });
+            }
+          }, 0);
+        }
       }
 
       // Ctrl+S or Cmd+S to save
@@ -875,7 +1027,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       document.removeEventListener('selectionchange', handleSelectionChange);
       setIsUnmounted(true);
     };
-  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting, undo, redo]);
+  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting, undo, redo, isUnmounted]);
 
   // Cleanup effect to prevent memory leaks
   useEffect(() => {
@@ -924,20 +1076,24 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
                 button.classList.remove('btn-outline-success');
                 button.classList.add('btn-success');
                 setTimeout(() => {
-                  button.innerHTML = originalText;
-                  button.classList.remove('btn-success');
-                  button.classList.add('btn-outline-success');
-                  button.disabled = false;
+                  if (!isUnmounted && button) {
+                    button.innerHTML = originalText;
+                    button.classList.remove('btn-success');
+                    button.classList.add('btn-outline-success');
+                    button.disabled = false;
+                  }
                 }, 2000);
               } else {
                 button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
                 button.classList.remove('btn-outline-success');
                 button.classList.add('btn-danger');
                 setTimeout(() => {
-                  button.innerHTML = originalText;
-                  button.classList.remove('btn-danger');
-                  button.classList.add('btn-outline-success');
-                  button.disabled = false;
+                  if (!isUnmounted && button) {
+                    button.innerHTML = originalText;
+                    button.classList.remove('btn-danger');
+                    button.classList.add('btn-outline-success');
+                    button.disabled = false;
+                  }
                 }, 2000);
               }
             }}
@@ -955,15 +1111,18 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           {`
             .wysiwyg-editor {
               min-height: 400px;
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              font-size: 0.9rem;
-              line-height: 1.6;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+              font-size: 11pt;
+              line-height: 1.5;
               color: #333;
               outline: none;
               border: none;
-              padding: 16px;
+              padding: 24px;
               white-space: pre-wrap;
               word-wrap: break-word;
+              text-align: left;
+              background: #ffffff;
+              margin: 0;
             }
             .wysiwyg-editor:focus {
               outline: 2px solid #007bff;
@@ -988,48 +1147,81 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }
             h1, h2, h3, h4, h5, h6 {
-              margin-top: 1.5rem;
-              margin-bottom: 1rem;
+              margin-top: 24pt;
+              margin-bottom: 12pt;
               color: #2c3e50;
+              font-weight: 600;
+              line-height: 1.2;
+            }
+            h1 {
+              font-size: 18pt;
+              margin-top: 12pt;
+              margin-bottom: 24pt;
             }
             h2 {
-              font-size: 1.5rem;
-              font-weight: 600;
-              border-bottom: 2px solid #3498db;
-              padding-bottom: 0.5rem;
+              font-size: 16pt;
+              margin-top: 20pt;
+              margin-bottom: 12pt;
+              border-bottom: 1px solid #ccc;
+              padding-bottom: 3pt;
             }
             h3 {
-              font-size: 1.25rem;
-              font-weight: 600;
-              border-bottom: 1px solid #bdc3c7;
-              padding-bottom: 0.3rem;
+              font-size: 14pt;
+              margin-top: 16pt;
+              margin-bottom: 8pt;
             }
             h4 {
-              font-size: 1.1rem;
-              font-weight: 600;
+              font-size: 12pt;
+              margin-top: 14pt;
+              margin-bottom: 8pt;
+            }
+            h5 {
+              font-size: 11pt;
+              margin-top: 12pt;
+              margin-bottom: 6pt;
+            }
+            h6 {
+              font-size: 10pt;
+              margin-top: 12pt;
+              margin-bottom: 6pt;
             }
             p {
-              margin-bottom: 1rem;
-              line-height: 1.6;
-              min-height: 1.6em;
+              margin: 0 0 12pt 0;
+              line-height: 1.5;
+              min-height: 1.5em;
+              text-indent: 0;
+              word-wrap: break-word;
             }
             p:empty {
-              min-height: 1.6em;
-              margin-bottom: 1rem;
+              min-height: 1.5em;
+              margin-bottom: 12pt;
             }
             p:empty:before {
               content: "";
               display: inline-block;
             }
             br {
-              line-height: 1.6;
+              line-height: 1.5;
+            }
+            /* Word-like spacing */
+            .wysiwyg-editor {
+              letter-spacing: 0.01em;
             }
             ul, ol {
-              margin-bottom: 1rem;
-              padding-left: 1.5rem;
+              margin-bottom: 12pt;
+              padding-left: 36pt;
             }
             li {
-              margin-bottom: 0.5rem;
+              margin-bottom: 6pt;
+              line-height: 1.5;
+            }
+            ol li {
+              margin-left: 0;
+              padding-left: 0;
+            }
+            ul li {
+              margin-left: 0;
+              padding-left: 0;
             }
             strong {
               color: #2c3e50;
@@ -1187,6 +1379,17 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               title="Numbered List"
             >
               <i className="bi bi-list-ol"></i>
+            </button>
+            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
+            <button
+              className="toolbar-btn"
+              onMouseDown={(e) => {
+                e.preventDefault(); // Prevent losing focus
+                insertFormatting('\n\n', ''); // Insert paragraph break
+              }}
+              title="Insert Paragraph Break (Enter)"
+            >
+              <i className="bi bi-paragraph"></i> ¶
             </button>
             <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
             <button

@@ -640,7 +640,7 @@ async def upload_file(
     db: Session = Depends(get_db)
 ):
     """Upload file and add it to the processing queue"""
-    upload_dir = "backend/uploads"
+    upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
 
     # Check file size (limit to 200MB)
@@ -824,7 +824,7 @@ def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_
     if job.file_path and os.path.exists(job.file_path):
         audio_path = job.file_path
     else:
-        upload_dir = "backend/uploads"
+        upload_dir = "uploads"
         candidate_path = os.path.join(upload_dir, job.filename)
         if os.path.exists(candidate_path):
             audio_path = candidate_path
