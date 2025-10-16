@@ -60,6 +60,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [isUnmounted, setIsUnmounted] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
+  const [originalHtml, setOriginalHtml] = useState('');
 
   // Safe DOM operation wrapper
   const safeSetInnerHTML = useCallback((element: HTMLElement | null, html: string) => {
@@ -227,6 +228,29 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   const getHtmlContent = useCallback(() => convertMarkdownToHtml(editedContent), [convertMarkdownToHtml, editedContent]);
 
+  const normalizeEditorHtml = useCallback((html: string) => {
+    return html
+      // Ensure consistent paragraph structure
+      .replace(/<div><br><\/div>/g, '<p><br></p>')
+      .replace(/<div([^>]*)>(.*?)<\/div>/g, '<p>$2</p>')
+      // Handle multiple consecutive line breaks
+      .replace(/(<br\s*\/?>){3,}/g, '<br><br>')
+      // Clean up empty paragraphs
+      .replace(/<p><\/p>/g, '<p><br></p>')
+      // Ensure proper spacing around elements
+      .replace(/><(p|div|h[1-6]|ul|ol)>/g, '><$1>');
+  }, []);
+
+  const normalizeHtmlForComparison = useCallback((html: string) => html.replace(/\s+/g, ' ').trim(), []);
+
+  const hasContentChanged = useCallback((markdown: string, html?: string) => {
+    const originalNormalizedHtml = normalizeHtmlForComparison(originalHtml || '');
+    const htmlChanged = html !== undefined
+      ? normalizeHtmlForComparison(html) !== originalNormalizedHtml
+      : false;
+    return htmlChanged || markdown !== originalContent;
+  }, [originalContent, originalHtml, normalizeHtmlForComparison]);
+
   useEffect(() => {
     if (summary) {
       try {
@@ -329,15 +353,13 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           // Initialize history with the first content
           setHistory([processedContent]);
           setHistoryIndex(0);
-
           const initialHtml = convertMarkdownToHtml(processedContent);
-          requestAnimationFrame(() => {
-            if (isUnmounted) return;
-            const editorElement = editorRef.current;
-            if (editorElement) {
-              safeSetInnerHTML(editorElement, initialHtml);
-            }
-          });
+          const editorElement = editorRef.current;
+          if (editorElement && !isUnmounted) {
+            safeSetInnerHTML(editorElement, initialHtml);
+          }
+          setOriginalHtml(normalizeEditorHtml(initialHtml));
+          setIsInitialized(true);
         } else {
           // Fallback: if no content, create a simple message
           const fallbackContent = 'No summary content available. Please generate a new summary.';
@@ -346,15 +368,13 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           // Initialize history with the fallback content
           setHistory([fallbackContent]);
           setHistoryIndex(0);
-
           const fallbackHtml = convertMarkdownToHtml(fallbackContent);
-          requestAnimationFrame(() => {
-            if (isUnmounted) return;
-            const editorElement = editorRef.current;
-            if (editorElement) {
-              safeSetInnerHTML(editorElement, fallbackHtml);
-            }
-          });
+          const editorElement = editorRef.current;
+          if (editorElement && !isUnmounted) {
+            safeSetInnerHTML(editorElement, fallbackHtml);
+          }
+          setOriginalHtml(normalizeEditorHtml(fallbackHtml));
+          setIsInitialized(true);
         }
       } catch (error) {
         console.error('Error parsing summary:', error);
@@ -368,18 +388,16 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         // Initialize history with the summary content
         setHistory([summary]);
         setHistoryIndex(0);
-
         const fallbackHtml = convertMarkdownToHtml(summary);
-        requestAnimationFrame(() => {
-          if (isUnmounted) return;
-          const editorElement = editorRef.current;
-          if (editorElement) {
-            safeSetInnerHTML(editorElement, fallbackHtml);
-          }
-        });
+        const editorElement = editorRef.current;
+        if (editorElement && !isUnmounted) {
+          safeSetInnerHTML(editorElement, fallbackHtml);
+        }
+        setOriginalHtml(normalizeEditorHtml(fallbackHtml));
+        setIsInitialized(true);
       }
     }
-  }, [summary, convertMarkdownToHtml, isUnmounted, safeSetInnerHTML]);
+  }, [summary, convertMarkdownToHtml, isUnmounted, safeSetInnerHTML, normalizeEditorHtml]);
 
   // Handle reference click
   const handleReferenceClick = (refAttr: string) => {
@@ -465,26 +483,22 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   // Add content to history
   const addToHistory = useCallback((content: string) => {
     setHistory(prevHistory => {
-      setHistoryIndex(prevIndex => {
-        // If we're not at the end of history, truncate the future history
-        let newHistory = prevIndex < prevHistory.length - 1
-          ? prevHistory.slice(0, prevIndex + 1)
-          : [...prevHistory];
+      let newHistory = historyIndex < prevHistory.length - 1
+        ? prevHistory.slice(0, historyIndex + 1)
+        : [...prevHistory];
 
-        // Add the new content
-        newHistory.push(content);
+      newHistory.push(content);
 
-        // Limit history size
-        if (newHistory.length > maxHistorySize) {
-          newHistory = newHistory.slice(-maxHistorySize);
-          return newHistory.length - 1;
-        }
+      if (newHistory.length > maxHistorySize) {
+        newHistory = newHistory.slice(-maxHistorySize);
+        setHistoryIndex(newHistory.length - 1);
+      } else {
+        setHistoryIndex(newHistory.length - 1);
+      }
 
-        return newHistory.length - 1;
-      });
-      return prevHistory;
+      return newHistory;
     });
-  }, []);
+  }, [historyIndex, maxHistorySize]);
 
   // Undo function
   const undo = useCallback(() => {
@@ -493,7 +507,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       setHistoryIndex(newIndex);
       const content = history[newIndex];
       setEditedContent(content);
-      setHasChanges(content !== originalContent);
+      setHasChanges(hasContentChanged(content));
 
       // Update editor content
       const editor = editorRef.current;
@@ -502,7 +516,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         safeSetInnerHTML(editor, htmlContent);
       }
     }
-  }, [historyIndex, history, originalContent, getHtmlContent, safeSetInnerHTML]);
+  }, [historyIndex, history, hasContentChanged, getHtmlContent, safeSetInnerHTML]);
 
   // Redo function
   const redo = useCallback(() => {
@@ -511,7 +525,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       setHistoryIndex(newIndex);
       const content = history[newIndex];
       setEditedContent(content);
-      setHasChanges(content !== originalContent);
+      setHasChanges(hasContentChanged(content));
 
       // Update editor content
       const editor = editorRef.current;
@@ -520,27 +534,17 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         safeSetInnerHTML(editor, htmlContent);
       }
     }
-  }, [historyIndex, history, originalContent, getHtmlContent, safeSetInnerHTML]);
+  }, [historyIndex, history, hasContentChanged, getHtmlContent, safeSetInnerHTML]);
 
   // Handle WYSIWYG input with auto-save
   const handleWysiwygInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
     e.persist();
     const target = e.currentTarget;
     const htmlContent = target.innerHTML;
-
-    // Normalize HTML to handle different ways browsers create line breaks
-    const normalizedHtml = htmlContent
-      // Ensure consistent paragraph structure
-      .replace(/<div><br><\/div>/g, '<p><br></p>')
-      .replace(/<div([^>]*)>(.*?)<\/div>/g, '<p>$2</p>')
-      // Handle multiple consecutive line breaks
-      .replace(/(<br\s*\/?>){3,}/g, '<br><br>')
-      // Clean up empty paragraphs
-      .replace(/<p><\/p>/g, '<p><br></p>')
-      // Ensure proper spacing around elements
-      .replace(/><(p|div|h[1-6]|ul|ol)>/g, '><$1>');
+    const normalizedHtml = normalizeEditorHtml(htmlContent);
 
     const markdownContent = htmlToMarkdown(normalizedHtml);
+    const contentChanged = hasContentChanged(markdownContent, normalizedHtml);
 
     // Only add to history if content actually changed
     if (markdownContent !== editedContent) {
@@ -548,12 +552,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       requestAnimationFrame(() => {
         if (!isUnmounted) {
           setEditedContent(markdownContent);
-          setHasChanges(markdownContent !== originalContent);
+          setHasChanges(contentChanged);
           addToHistory(markdownContent);
         }
       });
+    } else if (contentChanged) {
+      setHasChanges(true);
     }
-  }, [htmlToMarkdown, originalContent, editedContent, addToHistory, isUnmounted]);
+  }, [htmlToMarkdown, editedContent, addToHistory, isUnmounted, normalizeEditorHtml, hasContentChanged]);
 
   // Handle focus to track editing state
   const handleEditorFocus = useCallback(() => {
@@ -572,16 +578,18 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       if (editor && !editor.contains(document.activeElement)) {
         const target = e.currentTarget;
         const htmlContent = target.innerHTML;
-        const markdownContent = htmlToMarkdown(htmlContent);
+        const normalizedHtml = normalizeEditorHtml(htmlContent);
+        const markdownContent = htmlToMarkdown(normalizedHtml);
+        const contentChanged = hasContentChanged(markdownContent, normalizedHtml);
 
         if (!isUnmounted) {
           setEditedContent(markdownContent);
-          setHasChanges(markdownContent !== originalContent);
+          setHasChanges(contentChanged);
           setIsEditing(false);
         }
       }
     }, 10);
-  }, [htmlToMarkdown, originalContent, isUnmounted]);
+  }, [htmlToMarkdown, isUnmounted, normalizeEditorHtml, hasContentChanged]);
 
   // Check if selection is already formatted with the given tag
   const isSelectionFormatted = useCallback((range: Range, tagName: string): boolean => {
@@ -794,12 +802,19 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
         if (editor && !isUnmounted) {
           try {
-            const newHtmlContent = editor.innerHTML;
-            const newMarkdownContent = htmlToMarkdown(newHtmlContent);
-            if (newMarkdownContent !== editedContent && !isUnmounted) {
-              setEditedContent(newMarkdownContent);
-              setHasChanges(newMarkdownContent !== originalContent);
-              addToHistory(newMarkdownContent);
+            const rawHtml = editor.innerHTML;
+            const normalizedHtml = normalizeEditorHtml(rawHtml);
+            const newMarkdownContent = htmlToMarkdown(normalizedHtml);
+            const contentChanged = hasContentChanged(newMarkdownContent, normalizedHtml);
+
+            if (!isUnmounted) {
+              if (newMarkdownContent !== editedContent) {
+                setEditedContent(newMarkdownContent);
+                setHasChanges(contentChanged);
+                addToHistory(newMarkdownContent);
+              } else if (contentChanged) {
+                setHasChanges(true);
+              }
             }
           } catch (error) {
             console.warn('Error updating content after formatting:', error);
@@ -807,7 +822,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         }
       }, 50);
     }, 10); // Small delay to ensure focus is restored
-  }, [isSelectionFormatted, restoreEditorFocus, editedContent, originalContent, htmlToMarkdown, addToHistory, isUnmounted]);
+  }, [isSelectionFormatted, restoreEditorFocus, editedContent, htmlToMarkdown, addToHistory, isUnmounted, normalizeEditorHtml, hasContentChanged]);
 
   // Check toolbar button states based on current selection
   const checkToolbarStates = useCallback(() => {
@@ -871,6 +886,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
       setOriginalContent(editedContent);
       setHasChanges(false);
+      const currentHtmlSource = editorRef.current
+        ? editorRef.current.innerHTML
+        : convertMarkdownToHtml(editedContent);
+      setOriginalHtml(normalizeEditorHtml(currentHtmlSource));
 
       // Force re-render after successful save
       setTimeout(() => {
@@ -892,7 +911,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       console.error('Error saving summary:', error);
       return false;
     }
-  }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent, isUnmounted]);
+  }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent, isUnmounted, normalizeEditorHtml, convertMarkdownToHtml]);
 
   // Initialize editor content when summary changes or when editor is ready
   useEffect(() => {
