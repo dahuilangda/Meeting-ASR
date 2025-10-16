@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Alert, Button, Card, Form, Modal, Spinner } from 'react-bootstrap';
-import { getCurrentUser, updateCurrentUser, changePassword, User, UserUpdate, PasswordChange } from '../api/user';
+import { updateCurrentUser, changePassword, User, UserUpdate, PasswordChange } from '../api/user';
 
 interface UserSettingsProps {
   currentUser: User | null;
@@ -115,7 +115,7 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
                   <Form.Control
                     type="text"
                     value={profileForm.full_name}
-                    onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProfileForm({ ...profileForm, full_name: e.target.value })}
                     placeholder="Enter your full name"
                   />
                 </Form.Group>
@@ -125,7 +125,7 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
                   <Form.Control
                     type="email"
                     value={profileForm.email}
-                    onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProfileForm({ ...profileForm, email: e.target.value })}
                     placeholder="Enter your email"
                   />
                 </Form.Group>
@@ -212,7 +212,7 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
               <Form.Control
                 type="password"
                 value={passwordForm.current_password}
-                onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
                 required
               />
             </Form.Group>
@@ -222,7 +222,7 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
               <Form.Control
                 type="password"
                 value={passwordForm.new_password}
-                onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
                 required
                 minLength={6}
               />
@@ -237,7 +237,7 @@ export const UserSettings: React.FC<UserSettingsProps> = ({ currentUser, onUserU
                 type="password"
                 required
                 minLength={6}
-                isInvalid={passwordForm.new_password && passwordForm.new_password.length < 6}
+                isInvalid={!!(passwordForm.new_password && passwordForm.new_password.length < 6)}
               />
               <Form.Control.Feedback type="invalid">
                 Passwords must match and be at least 6 characters

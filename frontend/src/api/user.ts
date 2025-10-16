@@ -1,4 +1,4 @@
-import { apiClient } from './api';
+import { apiClient } from '../api';
 
 export interface User {
   id: number;
@@ -45,17 +45,17 @@ export interface AdminStats {
 // User profile APIs
 export const getCurrentUser = async (): Promise<User> => {
   const response = await apiClient.get('/users/me');
-  return response.data;
+  return response.data as User;
 };
 
 export const updateCurrentUser = async (userData: UserUpdate): Promise<User> => {
   const response = await apiClient.put('/users/me', userData);
-  return response.data;
+  return response.data as User;
 };
 
 export const changePassword = async (passwordData: PasswordChange): Promise<{ message: string }> => {
   const response = await apiClient.post('/users/change_password', passwordData);
-  return response.data;
+  return response.data as { message: string };
 };
 
 // Admin user management APIs
@@ -67,12 +67,12 @@ export const getAllUsers = async (
   const response = await apiClient.get('/admin/users', {
     params: { skip, limit, include_inactive: includeInactive }
   });
-  return response.data;
+  return response.data as User[];
 };
 
 export const getUserById = async (userId: number): Promise<User> => {
   const response = await apiClient.get(`/admin/users/${userId}`);
-  return response.data;
+  return response.data as User;
 };
 
 export const updateUserByAdmin = async (
@@ -80,7 +80,7 @@ export const updateUserByAdmin = async (
   userData: UserUpdate
 ): Promise<User> => {
   const response = await apiClient.put(`/admin/users/${userId}`, userData);
-  return response.data;
+  return response.data as User;
 };
 
 export const resetUserPassword = async (
@@ -88,20 +88,20 @@ export const resetUserPassword = async (
   passwordData: PasswordReset
 ): Promise<{ message: string }> => {
   const response = await apiClient.post(`/admin/users/${userId}/reset_password`, passwordData);
-  return response.data;
+  return response.data as { message: string };
 };
 
 export const activateUser = async (userId: number): Promise<{ message: string }> => {
   const response = await apiClient.post(`/admin/users/${userId}/activate`);
-  return response.data;
+  return response.data as { message: string };
 };
 
 export const deactivateUser = async (userId: number): Promise<{ message: string }> => {
   const response = await apiClient.post(`/admin/users/${userId}/deactivate`);
-  return response.data;
+  return response.data as { message: string };
 };
 
 export const getAdminStats = async (): Promise<AdminStats> => {
   const response = await apiClient.get('/admin/stats');
-  return response.data;
+  return response.data as AdminStats;
 };

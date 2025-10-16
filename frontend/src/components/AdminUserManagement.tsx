@@ -13,11 +13,11 @@ import {
 } from 'react-bootstrap';
 import {
   getAllUsers,
-  getUserById,
   updateUserByAdmin,
   resetUserPassword,
   activateUser,
   deactivateUser,
+  getAdminStats,
   User,
   UserUpdate,
   PasswordReset,
@@ -59,7 +59,7 @@ export const AdminUserManagement: React.FC = () => {
   useEffect(() => {
     loadUsers();
     loadStats();
-  }, [currentPage, includeInactive, searchTerm]);
+  }, [currentPage, includeInactive, searchTerm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadUsers = async () => {
     setLoading(true);
@@ -252,7 +252,7 @@ export const AdminUserManagement: React.FC = () => {
                   type="text"
                   placeholder="Search users..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
                 />
               </InputGroup>
             </div>
@@ -261,7 +261,7 @@ export const AdminUserManagement: React.FC = () => {
                 type="checkbox"
                 label="Include inactive users"
                 checked={includeInactive}
-                onChange={(e) => setIncludeInactive(e.target.checked)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIncludeInactive(e.target.checked)}
               />
             </div>
           </div>
@@ -391,7 +391,7 @@ export const AdminUserManagement: React.FC = () => {
               <Form.Control
                 type="text"
                 value={editForm.full_name}
-                onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm({ ...editForm, full_name: e.target.value })}
               />
             </Form.Group>
 
@@ -400,7 +400,7 @@ export const AdminUserManagement: React.FC = () => {
               <Form.Control
                 type="email"
                 value={editForm.email}
-                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm({ ...editForm, email: e.target.value })}
               />
             </Form.Group>
 
@@ -408,7 +408,7 @@ export const AdminUserManagement: React.FC = () => {
               <Form.Label>Role</Form.Label>
               <Form.Select
                 value={editForm.role}
-                onChange={(e) => setEditForm({ ...editForm, role: e.target.value as any })}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setEditForm({ ...editForm, role: e.target.value as any })}
               >
                 <option value="user">User</option>
                 <option value="admin">Admin</option>
@@ -421,7 +421,7 @@ export const AdminUserManagement: React.FC = () => {
                 type="checkbox"
                 label="Active"
                 checked={editForm.is_active}
-                onChange={(e) => setEditForm({ ...editForm, is_active: e.target.checked })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditForm({ ...editForm, is_active: e.target.checked })}
               />
             </Form.Group>
           </Modal.Body>
@@ -454,7 +454,7 @@ export const AdminUserManagement: React.FC = () => {
               <Form.Control
                 type="password"
                 value={passwordForm.new_password}
-                onChange={(e) => setPasswordForm({ new_password: e.target.value })}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPasswordForm({ new_password: e.target.value })}
                 required
                 minLength={6}
               />
