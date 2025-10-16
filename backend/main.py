@@ -107,9 +107,9 @@ app.add_middleware(
 )
 
 # Mount the uploads directory to serve audio files
-app.mount("/uploads", StaticFiles(directory="backend/uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-TRANSCRIPT_STORAGE_DIR = Path("backend/uploads/transcripts")
+TRANSCRIPT_STORAGE_DIR = Path("uploads/transcripts")
 
 def persist_transcript_to_disk(job_id: int, transcript_text: str, segments: List[dict]) -> None:
     """Persist transcript text and structured segments to disk for realtime access."""

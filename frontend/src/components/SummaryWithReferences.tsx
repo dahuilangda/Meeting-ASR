@@ -58,6 +58,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [hasChanges, setHasChanges] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isUnmounted, setIsUnmounted] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
   // Undo/Redo state management
@@ -156,71 +157,142 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   // Convert markdown to HTML for WYSIWYG editor
   const getHtmlContent = useCallback(() => {
-    let html = editedContent
-      // Handle headers
-      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-      // Handle bold
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      // Handle italic
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      // Handle lists
-      .replace(/^- (.+)$/gm, '<li>$1</li>')
-      .replace(/^(\d+)\. (.+)$/gm, '<li>$1. $2</li>')
-      // Handle transcript references
-      .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>')
-      // Handle line breaks
-      .replace(/\n\n+/g, '</p><p>')
-      .replace(/\n/g, '<br>');
-
-    // Wrap in paragraphs if not starting with HTML block
-    if (!html.startsWith('<h') && !html.startsWith('<li>') && !html.startsWith('<ul>') && !html.startsWith('<ol>')) {
-      html = '<p>' + html + '</p>';
+    if (!editedContent.trim()) {
+      return '<p><br></p>';
     }
 
-    // Wrap consecutive list items in proper list tags
-    html = html.replace(/(<li>.*?<\/li>)/gs, (match) => {
-      if (match.includes('. ')) {
-        return '<ol>' + match + '</ol>';
-      } else {
-        return '<ul>' + match + '</ul>';
-      }
-    });
+    let html = editedContent;
 
-    return html;
+    // Split into lines to handle line breaks properly
+    const lines = html.split('\n');
+    let processedLines: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Handle headers
+      if (line.startsWith('###### ')) {
+        processedLines.push(`<h6>${line.substring(7)}</h6>`);
+      } else if (line.startsWith('##### ')) {
+        processedLines.push(`<h5>${line.substring(6)}</h5>`);
+      } else if (line.startsWith('#### ')) {
+        processedLines.push(`<h4>${line.substring(5)}</h4>`);
+      } else if (line.startsWith('### ')) {
+        processedLines.push(`<h3>${line.substring(4)}</h3>`);
+      } else if (line.startsWith('## ')) {
+        processedLines.push(`<h2>${line.substring(3)}</h2>`);
+      } else if (line.startsWith('# ')) {
+        processedLines.push(`<h1>${line.substring(2)}</h1>`);
+      }
+      // Handle list items
+      else if (line.match(/^(\d+)\. .+$/)) {
+        let listItems = [];
+        // Collect consecutive numbered list items
+        while (i < lines.length && lines[i].match(/^(\d+)\. .+$/)) {
+          listItems.push(`<li>${lines[i].replace(/^(\d+)\. /, '$1. ')}</li>`);
+          i++;
+        }
+        processedLines.push(`<ol>${listItems.join('')}</ol>`);
+        continue; // Skip the i++ since we already incremented it
+      }
+      else if (line.startsWith('- ')) {
+        let listItems = [];
+        // Collect consecutive bullet list items
+        while (i < lines.length && lines[i].startsWith('- ')) {
+          listItems.push(`<li>${lines[i].substring(2)}</li>`);
+          i++;
+        }
+        processedLines.push(`<ul>${listItems.join('')}</ul>`);
+        continue; // Skip the i++ since we already incremented it
+      }
+      // Handle empty lines
+      else if (line.trim() === '') {
+        // Add paragraph break
+        if (processedLines.length > 0 && !processedLines[processedLines.length - 1].match(/^<h[1-6]>/) &&
+            !processedLines[processedLines.length - 1].endsWith('</ul>') &&
+            !processedLines[processedLines.length - 1].endsWith('</ol>')) {
+          processedLines.push('</p><p>');
+        }
+      }
+      // Handle regular text
+      else {
+        // Apply formatting to regular text
+        let formattedLine = line
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
+
+        processedLines.push(formattedLine);
+      }
+
+      i++;
+    }
+
+    // Join the processed lines and wrap in paragraphs
+    let finalHtml = processedLines.join('<br>');
+
+    // If the content doesn't start with a header or list, wrap it in paragraphs
+    if (!finalHtml.startsWith('<h') && !finalHtml.startsWith('<ul>') && !finalHtml.startsWith('<ol>')) {
+      finalHtml = '<p>' + finalHtml + '</p>';
+    }
+
+    // Clean up double paragraphs and ensure proper structure
+    finalHtml = finalHtml
+      .replace(/<\/p><p><br>/g, '</p><p>')
+      .replace(/<p>(<h[1-6]>)/g, '$1')
+      .replace(/(<\/h[1-6]>)<\/p>/g, '$1')
+      .replace(/<p>(<ul>|<ol>)/g, '$1')
+      .replace(/(<\/ul>|<\/ol>)<\/p>/g, '$1')
+      .replace(/<p><\/p>/g, '<p><br></p>');
+
+    return finalHtml;
   }, [editedContent]);
 
   // Convert HTML back to markdown
   const htmlToMarkdown = useCallback((html: string): string => {
+    if (!html) return '';
+
     let markdown = html
-      // Handle headers
+      // Handle headers first (before paragraph processing)
       .replace(/<h1>(.+?)<\/h1>/gi, '# $1\n\n')
       .replace(/<h2>(.+?)<\/h2>/gi, '## $1\n\n')
       .replace(/<h3>(.+?)<\/h3>/gi, '### $1\n\n')
       .replace(/<h4>(.+?)<\/h4>/gi, '#### $1\n\n')
       .replace(/<h5>(.+?)<\/h5>/gi, '##### $1\n\n')
       .replace(/<h6>(.+?)<\/h6>/gi, '###### $1\n\n')
-      // Handle bold
+      // Handle bold and italic
       .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
-      // Handle italic
       .replace(/<em>(.+?)<\/em>/gi, '*$1*')
-      // Handle lists
+      // Handle transcript references
+      .replace(/<span class="transcript-ref"[^>]*data-ref="([^"]*)"[^>]*>([^<]+)<\/span>/gi, '[[$1]]')
+      // Handle lists (preserve structure)
       .replace(/<ol>(.*?)<\/ol>/gis, (match, content) => {
         return content.replace(/<li>(.+?)<\/li>/gi, '$1\n').replace(/^\d+\.\s/, '');
       })
       .replace(/<ul>(.*?)<\/ul>/gis, (match, content) => {
         return content.replace(/<li>(.+?)<\/li>/gi, '- $1\n');
       })
-      // Handle transcript references
-      .replace(/<span class="transcript-ref"[^>]*data-ref="([^"]*)"[^>]*>([^<]+)<\/span>/gi, '[[$1]]')
-      // Handle paragraphs and line breaks
+      // Handle paragraphs - convert to line breaks
       .replace(/<\/p>/g, '\n\n')
       .replace(/<p>/g, '')
-      .replace(/<br\s*\/?>/g, '\n')
-      // Clean up extra whitespace
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+      // Handle line breaks - convert to single line breaks
+      .replace(/<br\s*\/?>/gi, '\n')
+      // Handle div separators
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<div[^>]*>/gi, '')
+      // Clean up HTML entities
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      // Clean up extra whitespace but preserve paragraph structure
+      .replace(/\n{4,}/g, '\n\n\n') // Limit to max 3 consecutive line breaks
+      .replace(/[ \t]+$/gm, '') // Remove trailing spaces
+      .replace(/^\s+|\s+$/g, '') // Trim leading/trailing whitespace
+      .replace(/\n[ \t]+\n/g, '\n\n') // Clean lines with only whitespace
+      .replace(/\n{3,}/g, '\n\n'); // Finally, ensure max 2 consecutive line breaks
 
     return markdown;
   }, []);
@@ -259,9 +331,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       setHasChanges(content !== originalContent);
 
       // Update editor content
-      if (editorRef.current) {
+      const editor = editorRef.current;
+      if (editor) {
         const htmlContent = getHtmlContent();
-        editorRef.current.innerHTML = htmlContent;
+        editor.innerHTML = htmlContent;
       }
     }
   }, [historyIndex, history, originalContent, getHtmlContent]);
@@ -276,9 +349,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       setHasChanges(content !== originalContent);
 
       // Update editor content
-      if (editorRef.current) {
+      const editor = editorRef.current;
+      if (editor) {
         const htmlContent = getHtmlContent();
-        editorRef.current.innerHTML = htmlContent;
+        editor.innerHTML = htmlContent;
       }
     }
   }, [historyIndex, history, originalContent, getHtmlContent]);
@@ -286,20 +360,33 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   // Handle WYSIWYG input with auto-save
   const handleWysiwygInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
     e.persist();
-    // Only update state if not currently editing to avoid losing focus
-    if (!isEditing) {
-      const target = e.currentTarget;
-      const htmlContent = target.innerHTML;
-      const markdownContent = htmlToMarkdown(htmlContent);
+    const target = e.currentTarget;
+    const htmlContent = target.innerHTML;
 
-      // Only add to history if content actually changed
-      if (markdownContent !== editedContent) {
+    // Normalize HTML to handle different ways browsers create line breaks
+    const normalizedHtml = htmlContent
+      // Ensure consistent paragraph structure
+      .replace(/<div><br><\/div>/g, '<p><br></p>')
+      .replace(/<div([^>]*)>(.*?)<\/div>/g, '<p>$2</p>')
+      // Handle multiple consecutive line breaks
+      .replace(/(<br\s*\/?>){3,}/g, '<br><br>')
+      // Clean up empty paragraphs
+      .replace(/<p><\/p>/g, '<p><br></p>')
+      // Ensure proper spacing around elements
+      .replace(/><(p|div|h[1-6]|ul|ol)>/g, '><$1>');
+
+    const markdownContent = htmlToMarkdown(normalizedHtml);
+
+    // Only add to history if content actually changed
+    if (markdownContent !== editedContent) {
+      // Use requestAnimationFrame to avoid blocking the input thread
+      requestAnimationFrame(() => {
         setEditedContent(markdownContent);
         setHasChanges(markdownContent !== originalContent);
         addToHistory(markdownContent);
-      }
+      });
     }
-  }, [htmlToMarkdown, originalContent, isEditing, editedContent, addToHistory]);
+  }, [htmlToMarkdown, originalContent, editedContent, addToHistory]);
 
   // Handle focus to track editing state
   const handleEditorFocus = useCallback(() => {
@@ -308,13 +395,20 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   // Handle blur to save content
   const handleEditorBlur = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
-    const target = e.currentTarget;
-    const htmlContent = target.innerHTML;
-    const markdownContent = htmlToMarkdown(htmlContent);
+    // Small delay to allow related target to be properly set
+    setTimeout(() => {
+      // Check if focus moved outside the editor
+      const editor = editorRef.current;
+      if (editor && !editor.contains(document.activeElement)) {
+        const target = e.currentTarget;
+        const htmlContent = target.innerHTML;
+        const markdownContent = htmlToMarkdown(htmlContent);
 
-    setEditedContent(markdownContent);
-    setHasChanges(markdownContent !== originalContent);
-    setIsEditing(false);
+        setEditedContent(markdownContent);
+        setHasChanges(markdownContent !== originalContent);
+        setIsEditing(false);
+      }
+    }, 10);
   }, [htmlToMarkdown, originalContent]);
 
   // Check if selection is already formatted with the given tag
@@ -492,12 +586,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           selection.addRange(range);
         }
 
-        // Trigger input event to update the editor content
+        // Trigger input event to update the editor content with a delay to preserve focus
         const wysiwygEditor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
         if (wysiwygEditor) {
-          // Force a content update
-          const inputEvent = new Event('input', { bubbles: true });
-          wysiwygEditor.dispatchEvent(inputEvent);
+          // Use requestAnimationFrame to ensure focus is preserved
+          requestAnimationFrame(() => {
+            const inputEvent = new Event('input', { bubbles: true });
+            wysiwygEditor.dispatchEvent(inputEvent);
+          });
         }
       } catch (error) {
         console.error('Error inserting formatting:', error);
@@ -599,8 +695,9 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
       // Force re-render after successful save
       setTimeout(() => {
-        if (editorRef.current) {
-          editorRef.current.innerHTML = getHtmlContent();
+        const editor = editorRef.current;
+        if (editor) {
+          editor.innerHTML = getHtmlContent();
         }
       }, 100);
 
@@ -613,31 +710,66 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
   // Initialize editor content when summary changes or when editor is ready
   useEffect(() => {
-    if (editorRef.current && editedContent) {
+    const editor = editorRef.current;
+    if (editor && editedContent && !isInitialized) {
       const htmlContent = getHtmlContent();
-      editorRef.current.innerHTML = htmlContent;
+
+      // Only set content if the editor doesn't have focus
+      if (!editor.contains(document.activeElement)) {
+        editor.innerHTML = htmlContent;
+      }
+
       setIsInitialized(true);
     }
-  }, [editedContent, getHtmlContent]);
+  }, [editedContent, getHtmlContent, isInitialized]);
 
   // Also ensure content is rendered when component mounts or ref is set
   useEffect(() => {
-    if (editorRef.current && editedContent && !isInitialized) {
+    const editor = editorRef.current;
+    if (editor && editedContent && !isInitialized) {
       const htmlContent = getHtmlContent();
-      editorRef.current.innerHTML = htmlContent;
+
+      // Only set content if the editor doesn't have focus
+      if (!editor.contains(document.activeElement)) {
+        editor.innerHTML = htmlContent;
+      }
+
       setIsInitialized(true);
     }
   }, [editorRef, editedContent, getHtmlContent, isInitialized]);
 
   // Prevent content from being overwritten by React's reconciliation
   useEffect(() => {
-    if (editorRef.current && isInitialized && editedContent && !isEditing) {
+    if (isUnmounted) return;
+
+    const editor = editorRef.current;
+    if (editor && isInitialized && editedContent && !isEditing && !document.activeElement?.isEqualNode(editor)) {
       const htmlContent = getHtmlContent();
-      if (editorRef.current.innerHTML !== htmlContent) {
-        editorRef.current.innerHTML = htmlContent;
+      if (editor.innerHTML !== htmlContent) {
+        // Save the current selection if there is one
+        const selection = window.getSelection();
+        const savedRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+        // Double-check editor still exists before updating
+        if (editorRef.current && !isUnmounted) {
+          editorRef.current.innerHTML = htmlContent;
+
+          // Restore the selection if we saved it and the editor doesn't have focus
+          if (savedRange && !editor.contains(document.activeElement)) {
+            try {
+              const newRange = document.createRange();
+              newRange.setStart(editor, 0);
+              newRange.collapse(true);
+              selection?.removeAllRanges();
+              selection?.addRange(newRange);
+            } catch (error) {
+              // If we can't restore the range, that's okay - just ensure the editor doesn't lose focus
+            }
+          }
+        }
       }
     }
-  }, [editedContent, getHtmlContent, isInitialized, isEditing]);
+  }, [editedContent, getHtmlContent, isInitialized, isEditing, isUnmounted]);
 
   // Add keyboard shortcuts and selection listeners
   useEffect(() => {
@@ -652,6 +784,22 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
       if (!editor || !editor.contains(target)) {
         return;
+      }
+
+      // Handle Enter key for proper line breaks
+      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        // Let the browser handle Enter naturally for contentEditable
+        // We'll process the resulting HTML in handleWysiwygInput
+        // Don't prevent default - let it create the line break
+        setTimeout(() => {
+          // Force content update after Enter key with a delay to preserve focus
+          if (editor && editor.contains(document.activeElement)) {
+            requestAnimationFrame(() => {
+              const inputEvent = new Event('input', { bubbles: true });
+              editor.dispatchEvent(inputEvent);
+            });
+          }
+        }, 0);
       }
 
       // Ctrl+S or Cmd+S to save
@@ -725,8 +873,16 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('selectionchange', handleSelectionChange);
+      setIsUnmounted(true);
     };
   }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting, undo, redo]);
+
+  // Cleanup effect to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      setIsUnmounted(true);
+    };
+  }, []);
 
 
   if (!summary) {
@@ -806,6 +962,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               outline: none;
               border: none;
               padding: 16px;
+              white-space: pre-wrap;
+              word-wrap: break-word;
             }
             .wysiwyg-editor:focus {
               outline: 2px solid #007bff;
@@ -852,6 +1010,18 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
             }
             p {
               margin-bottom: 1rem;
+              line-height: 1.6;
+              min-height: 1.6em;
+            }
+            p:empty {
+              min-height: 1.6em;
+              margin-bottom: 1rem;
+            }
+            p:empty:before {
+              content: "";
+              display: inline-block;
+            }
+            br {
               line-height: 1.6;
             }
             ul, ol {
