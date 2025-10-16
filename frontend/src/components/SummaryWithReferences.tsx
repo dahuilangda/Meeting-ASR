@@ -79,102 +79,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const [historyIndex, setHistoryIndex] = useState(-1);
   const maxHistorySize = 50; // Limit history size to prevent memory issues
 
-  useEffect(() => {
-    if (summary) {
-      try {
-        const parsed = JSON.parse(summary);
-        console.log('Parsed summary data:', parsed); // Debug log
-        setSummaryData(parsed);
-        // Only use formatted_content if it exists and is different from the raw summary
-        const formattedContent = parsed.formatted_content || '';
-        if (formattedContent && formattedContent.trim()) {
-          // Process the content to handle HTML references properly
-          let processedContent = formattedContent
-            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)">\[(\d+)\]<\/a>/g,
-              '[[$2]]')
-            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)" data-range="(\d+-\d+)">\[(\d+-\d+)\]<\/a>/g,
-              '[[$3]]');
-
-          // Convert HTML to markdown format for editing
-          processedContent = processedContent
-            // Headers
-            .replace(/<h[1-6]>(.+?)<\/h[1-6]>/gi, (match: string, content: string) => {
-              const level = match.match(/h(\d)/)?.[1] || '2';
-              return '#'.repeat(parseInt(level)) + ' ' + content + '\n\n';
-            })
-            // Bold text
-            .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
-            // Line breaks and paragraphs
-            .replace(/<\/p>/g, '\n\n')
-            .replace(/<p>/g, '')
-            // Lists
-            .replace(/<ul>/gi, '')
-            .replace(/<\/ul>/gi, '\n')
-            .replace(/<li>(.+?)<\/li>/gi, '- $1\n')
-            // Line breaks
-            .replace(/<br\s*\/?>/gi, '\n')
-            // Clean up extra whitespace
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-
-          setEditedContent(processedContent);
-          setOriginalContent(processedContent);
-          // Initialize history with the first content
-          setHistory([processedContent]);
-          setHistoryIndex(0);
-        } else {
-          // Fallback: if no formatted content, create a simple message
-          const fallbackContent = 'No formatted summary available. Please generate a new summary.';
-          setEditedContent(fallbackContent);
-          setOriginalContent(fallbackContent);
-          // Initialize history with the fallback content
-          setHistory([fallbackContent]);
-          setHistoryIndex(0);
-        }
-      } catch (error) {
-        console.error('Error parsing summary:', error);
-        // Fallback for old format summaries - convert to markdown
-        setSummaryData({
-          formatted_content: summary,
-          structured_data: {}
-        });
-        setEditedContent(summary);
-        setOriginalContent(summary);
-        // Initialize history with the summary content
-        setHistory([summary]);
-        setHistoryIndex(0);
-      }
-    }
-  }, [summary]);
-
-  // Handle reference click
-  const handleReferenceClick = (refAttr: string) => {
-    console.log('Transcript reference clicked:', { refAttr }); // Debug log
-    if (onSegmentClick) {
-      if (refAttr.includes('-')) {
-        // Handle range references like [[2-3]]
-        const [start, end] = refAttr.split('-').map(Number);
-        const range = [];
-        for (let i = start; i <= end; i++) {
-          range.push(i);
-        }
-        console.log('Calling onSegmentClick with range:', range);
-        onSegmentClick(range);
-      } else {
-        // Handle single reference like [[1]]
-        console.log('Calling onSegmentClick with single segment:', parseInt(refAttr));
-        onSegmentClick(parseInt(refAttr));
-      }
-    }
-  };
-
-  // Convert markdown to HTML for WYSIWYG editor with improved line break handling
-  const getHtmlContent = useCallback(() => {
-    if (!editedContent.trim()) {
+  const convertMarkdownToHtml = useCallback((markdown: string) => {
+    if (!markdown.trim()) {
       return '<p><br></p>';
     }
 
-    let html = editedContent;
+    let html = markdown;
 
     // Split into lines to handle line breaks properly
     const lines = html.split('\n');
@@ -284,11 +194,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           currentParagraph = [];
           inParagraph = false;
         }
-        // Only add empty paragraph if this is not the last line or if we have multiple consecutive empty lines
-        // This prevents creating unnecessary empty paragraphs at the end
-        if (i < lines.length - 1 || (i < lines.length - 2 && lines[i + 1]?.trim() === '')) {
-          processedLines.push('<p><br></p>');
-        }
+        // Add empty paragraph for line breaks (simplified logic)
+        processedLines.push('<p><br></p>');
       }
       // Handle regular text (part of paragraph)
       else {
@@ -316,7 +223,185 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     finalHtml = finalHtml.replace(/<p><br><\/p><p><br><\/p>/g, '<p><br></p>');
 
     return finalHtml;
-  }, [editedContent]);
+  }, []);
+
+  const getHtmlContent = useCallback(() => convertMarkdownToHtml(editedContent), [convertMarkdownToHtml, editedContent]);
+
+  useEffect(() => {
+    if (summary) {
+      try {
+        // Reset editor initialization so new summaries re-render correctly
+        setIsInitialized(false);
+        setIsEditing(false);
+        setHasChanges(false);
+
+        const parsed = JSON.parse(summary);
+        console.log('Parsed summary data:', parsed); // Debug log
+        setSummaryData(parsed);
+
+        // Try different possible content fields
+        let contentToUse = '';
+
+        // Check for formatted_content (new format)
+        if (parsed.formatted_content && parsed.formatted_content.trim()) {
+          contentToUse = parsed.formatted_content;
+        }
+        // Check for structured_data with overview (new enhanced format)
+        else if (parsed.structured_data && parsed.structured_data.overview) {
+          // Build content from structured data
+          const structured = parsed.structured_data;
+          let content = '';
+
+          if (structured.overview && structured.overview.content) {
+            content += `## Overview\n${structured.overview.content}\n\n`;
+          }
+
+          if (structured.key_discussions && structured.key_discussions.length > 0) {
+            content += `## Key Discussions\n`;
+            structured.key_discussions.forEach((discussion: any) => {
+              content += `### ${discussion.topic}\n${discussion.summary}\n\n`;
+            });
+          }
+
+          if (structured.decisions && structured.decisions.length > 0) {
+            content += `## Decisions\n`;
+            structured.decisions.forEach((decision: any) => {
+              content += `- **${decision.decision}** - ${decision.responsible_party}\n\n`;
+            });
+          }
+
+          if (structured.action_items && structured.action_items.length > 0) {
+            content += `## Action Items\n`;
+            structured.action_items.forEach((item: any) => {
+              content += `- ${item.action} - ${item.owner}${item.deadline ? ` (${item.deadline})` : ''}\n\n`;
+            });
+          }
+
+          if (structured.unresolved_issues && structured.unresolved_issues.length > 0) {
+            content += `## Unresolved Issues\n`;
+            structured.unresolved_issues.forEach((issue: any) => {
+              content += `- ${issue.issue}\n\n`;
+            });
+          }
+
+          contentToUse = content;
+        }
+        // Fallback to the summary itself if it's a string
+        else if (typeof summary === 'string' && summary.trim()) {
+          contentToUse = summary;
+        }
+
+        if (contentToUse && contentToUse.trim()) {
+          // Process the content to handle HTML references properly
+          let processedContent = contentToUse
+            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)">\[(\d+)\]<\/a>/g,
+              '[[$2]]')
+            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)" data-range="(\d+-\d+)">\[(\d+-\d+)\]<\/a>/g,
+              '[[$3]]');
+
+          // Convert HTML to markdown format for editing
+          processedContent = processedContent
+            // Headers
+            .replace(/<h[1-6]>(.+?)<\/h[1-6]>/gi, (match: string, content: string) => {
+              const level = match.match(/h(\d)/)?.[1] || '2';
+              return '#'.repeat(parseInt(level)) + ' ' + content + '\n\n';
+            })
+            // Bold text
+            .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
+            // Line breaks and paragraphs
+            .replace(/<\/p>/g, '\n\n')
+            .replace(/<p>/g, '')
+            // Lists
+            .replace(/<ul>/gi, '')
+            .replace(/<\/ul>/gi, '\n')
+            .replace(/<li>(.+?)<\/li>/gi, '- $1\n')
+            // Line breaks
+            .replace(/<br\s*\/?>/gi, '\n')
+            // Clean up extra whitespace
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+          console.log('Processed content for editor:', processedContent);
+          console.log('Content length:', processedContent.length);
+          console.log('EditedContent set to:', processedContent);
+          setEditedContent(processedContent);
+          setOriginalContent(processedContent);
+          // Initialize history with the first content
+          setHistory([processedContent]);
+          setHistoryIndex(0);
+
+          const initialHtml = convertMarkdownToHtml(processedContent);
+          requestAnimationFrame(() => {
+            if (isUnmounted) return;
+            const editorElement = editorRef.current;
+            if (editorElement) {
+              safeSetInnerHTML(editorElement, initialHtml);
+            }
+          });
+        } else {
+          // Fallback: if no content, create a simple message
+          const fallbackContent = 'No summary content available. Please generate a new summary.';
+          setEditedContent(fallbackContent);
+          setOriginalContent(fallbackContent);
+          // Initialize history with the fallback content
+          setHistory([fallbackContent]);
+          setHistoryIndex(0);
+
+          const fallbackHtml = convertMarkdownToHtml(fallbackContent);
+          requestAnimationFrame(() => {
+            if (isUnmounted) return;
+            const editorElement = editorRef.current;
+            if (editorElement) {
+              safeSetInnerHTML(editorElement, fallbackHtml);
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error parsing summary:', error);
+        // Fallback for old format summaries - convert to markdown
+        setSummaryData({
+          formatted_content: summary,
+          structured_data: {}
+        });
+        setEditedContent(summary);
+        setOriginalContent(summary);
+        // Initialize history with the summary content
+        setHistory([summary]);
+        setHistoryIndex(0);
+
+        const fallbackHtml = convertMarkdownToHtml(summary);
+        requestAnimationFrame(() => {
+          if (isUnmounted) return;
+          const editorElement = editorRef.current;
+          if (editorElement) {
+            safeSetInnerHTML(editorElement, fallbackHtml);
+          }
+        });
+      }
+    }
+  }, [summary, convertMarkdownToHtml, isUnmounted, safeSetInnerHTML]);
+
+  // Handle reference click
+  const handleReferenceClick = (refAttr: string) => {
+    console.log('Transcript reference clicked:', { refAttr }); // Debug log
+    if (onSegmentClick) {
+      if (refAttr.includes('-')) {
+        // Handle range references like [[2-3]]
+        const [start, end] = refAttr.split('-').map(Number);
+        const range = [];
+        for (let i = start; i <= end; i++) {
+          range.push(i);
+        }
+        console.log('Calling onSegmentClick with range:', range);
+        onSegmentClick(range);
+      } else {
+        // Handle single reference like [[1]]
+        console.log('Calling onSegmentClick with single segment:', parseInt(refAttr));
+        onSegmentClick(parseInt(refAttr));
+      }
+    }
+  };
+
 
   // Convert HTML back to markdown with improved line break handling
   const htmlToMarkdown = useCallback((html: string): string => {
