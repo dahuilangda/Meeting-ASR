@@ -50,12 +50,10 @@ export class JobWebSocketClient {
 
       try {
         const wsUrl = `${this.baseUrl}/ws/${this.token}`;
-        console.log('Connecting to WebSocket:', wsUrl);
 
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
-          console.log('WebSocket connected');
           this.isConnecting = false;
           this.reconnectAttempts = 0;
           resolve();
@@ -64,7 +62,6 @@ export class JobWebSocketClient {
         this.ws.onmessage = (event) => {
           try {
             const message: WebSocketMessage = JSON.parse(event.data);
-            console.log('WebSocket message received:', message);
 
             // Call general message callback
             if (this.onMessageCallback) {
@@ -88,12 +85,11 @@ export class JobWebSocketClient {
             }
 
           } catch (error) {
-            console.error('Failed to parse WebSocket message:', error);
+            // Ignore malformed messages
           }
         };
 
         this.ws.onclose = (event) => {
-          console.log('WebSocket disconnected:', event.code, event.reason);
           this.isConnecting = false;
           this.ws = null;
 
@@ -104,7 +100,6 @@ export class JobWebSocketClient {
         };
 
         this.ws.onerror = (error) => {
-          console.error('WebSocket error:', error);
           this.isConnecting = false;
           reject(error);
         };
@@ -120,11 +115,9 @@ export class JobWebSocketClient {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
 
-    console.log(`Attempting to reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
     setTimeout(() => {
-      this.connect().catch(error => {
-        console.error('Reconnection failed:', error);
+      this.connect().catch(() => {
+        // Silently handle reconnection failures
       });
     }, delay);
   }
@@ -174,21 +167,20 @@ export const useJobWebSocket = () => {
 
       client.onStatusChange((jobId, status, progress) => {
         // This will be handled by the component using the hook
-        console.log(`Job ${jobId} status changed to ${status} (${progress}%)`);
       });
 
       client.connect().then(() => {
         setWsClient(client);
         setIsConnected(true);
-      }).catch(error => {
-        console.error('Failed to connect WebSocket:', error);
+      }).catch(() => {
+        // Silently handle connection failures
       });
 
       return () => {
         client.disconnect();
       };
     } catch (error) {
-      console.error('Failed to create WebSocket client:', error);
+      // Silently handle client creation failures
     }
   }, []);
 
