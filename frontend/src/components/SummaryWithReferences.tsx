@@ -494,6 +494,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
     });
 
+    quill.root.style.whiteSpace = 'pre-wrap';
+
     quill.clipboard.addMatcher('span.summary-ref', (node: Node, delta: any) => {
       const refValue = (node as HTMLElement).getAttribute('data-ref') ?? '';
       delta.ops = [{ insert: `[${refValue}]`, attributes: { reference: refValue } }];
@@ -661,7 +663,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   }, [withEditor]);
 
   const handleInsertReference = useCallback(() => {
-    const userInput = window.prompt('输入要引用的转写段落编号（例如 3 或 5-7）');
+    const userInput = window.prompt('Enter transcript segment number (e.g. 3 or 5-7):');
     if (!userInput) {
       return;
     }
@@ -745,7 +747,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       return (
         <>
           <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" />
-          保存中...
+          Saving...
         </>
       );
     }
@@ -753,7 +755,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       return (
         <>
           <i className="bi bi-check-circle me-1" />
-          已保存
+          Saved
         </>
       );
     }
@@ -761,14 +763,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       return (
         <>
           <i className="bi bi-exclamation-triangle me-1" />
-          保存失败
+          Save failed
         </>
       );
     }
     return (
       <>
         <i className="bi bi-save me-1" />
-        保存
+        Save
       </>
     );
   }, [saveStatus]);
@@ -778,7 +780,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   if (!summary) {
     return (
       <div className="alert alert-info">
-        暂无会议纪要，请点击“Generate Summary”按钮生成最新内容。
+        No meeting summary yet. Click “Generate Summary” to create one.
       </div>
     );
   }
@@ -794,7 +796,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           {hasChanges && (
             <small className="text-warning">
               <i className="bi bi-exclamation-circle me-1" />
-              存在未保存的修改
+              Unsaved changes
             </small>
           )}
         </div>
@@ -876,7 +878,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         </div>
         <button type="button" className="btn btn-sm btn-outline-secondary" onClick={handleInsertReference}>
           <i className="bi bi-link-45deg me-1" />
-          插入引用
+          Insert Reference
         </button>
       </div>
 
@@ -893,9 +895,11 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
               font-size: 11pt;
               line-height: 1.6;
               color: #212529;
+              white-space: pre-wrap;
             }
             .ql-editor p {
               margin: 0 0 12pt 0;
+              white-space: pre-wrap;
             }
             .ql-editor h2,
             .ql-editor h3 {
