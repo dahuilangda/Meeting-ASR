@@ -329,6 +329,22 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     return service;
   }, []);
 
+  const normalizeMarkdown = useCallback((value: string) => {
+    if (!value) {
+      return '';
+    }
+    return value
+      .replace(/\r\n/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+$/gm, '')
+      .trimEnd();
+  }, []);
+
+  const areMarkdownEqual = useCallback(
+    (a: string, b: string) => normalizeMarkdown(a) === normalizeMarkdown(b),
+    [normalizeMarkdown]
+  );
+
   const enhanceHtml = useCallback((html: string) => wrapReferencesWithSpans(html), []);
 
   const parseSummary = useCallback((rawSummary: string | null) => {
@@ -427,9 +443,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     }
     const html = quill.root.innerHTML;
     const markdown = turndown.turndown(html);
-    setCurrentMarkdown(markdown);
-    setHasChanges(markdown.trim() !== initialMarkdown.trim());
-  }, [initialMarkdown, turndown]);
+    const normalized = normalizeMarkdown(markdown);
+    setCurrentMarkdown(normalized);
+    setHasChanges(!areMarkdownEqual(normalized, initialMarkdown));
+  }, [areMarkdownEqual, initialMarkdown, normalizeMarkdown, turndown]);
 
   const applyReferenceDecorations = useCallback(() => {
     const quill = quillRef.current;
@@ -587,9 +604,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   useEffect(() => {
     const parsed = parseSummary(summary);
     const enhancedHtml = enhanceHtml(parsed.html);
+    const normalizedMarkdown = normalizeMarkdown(parsed.markdown);
     setBaseSummaryData(parsed.base);
-    setInitialMarkdown(parsed.markdown);
-    setCurrentMarkdown(parsed.markdown);
+    setInitialMarkdown(normalizedMarkdown);
+    setCurrentMarkdown(normalizedMarkdown);
     setPendingHtml(enhancedHtml);
     setHasChanges(false);
     setSaveStatus('idle');
@@ -598,7 +616,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       window.clearTimeout(saveStatusTimer.current);
       saveStatusTimer.current = null;
     }
-  }, [summary, parseSummary, enhanceHtml]);
+  }, [summary, parseSummary, enhanceHtml, normalizeMarkdown]);
 
   useEffect(() => {
     loadHtmlIntoEditor(pendingHtml);
@@ -701,9 +719,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
     try {
       const base = baseSummaryData ?? { structured_data: {} };
+      const formattedContent = normalizeMarkdown(currentMarkdown);
       const updated: SummaryData = {
         ...base,
-        formatted_content: currentMarkdown
+        formatted_content: formattedContent
       };
 
       await apiClient.post(
@@ -717,7 +736,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
 
       setBaseSummaryData(updated);
-      setInitialMarkdown(currentMarkdown);
+      setInitialMarkdown(formattedContent);
+      setCurrentMarkdown(formattedContent);
       setHasChanges(false);
       setSaveStatus('success');
       resetSaveStatusLater();
@@ -731,6 +751,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     currentMarkdown,
     hasChanges,
     jobId,
+    normalizeMarkdown,
     onSummaryUpdate,
     resetSaveStatusLater,
     saveStatus
