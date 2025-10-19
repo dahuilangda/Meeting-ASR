@@ -198,6 +198,28 @@ const buildMarkdownFromStructuredData = (structured?: StructuredSummary): string
   return blocks.join('\n\n').trim();
 };
 
+const InlineBlot = Quill.import('blots/inline') as any;
+
+class ReferenceBlot extends InlineBlot {
+  static blotName = 'reference';
+  static className = 'summary-ref';
+  static tagName = 'span';
+
+  static create(value: string) {
+    const node = super.create(value) as HTMLElement;
+    const refValue = value ?? '';
+    node.setAttribute('data-ref', refValue);
+    node.textContent = `[${refValue}]`;
+    return node;
+  }
+
+  static formats(node: HTMLElement) {
+    return node.getAttribute('data-ref') ?? '';
+  }
+}
+
+Quill.register(ReferenceBlot);
+
 const wrapReferencesWithSpans = (html: string): string => {
   if (!html || typeof window === 'undefined') {
     return html;
@@ -472,6 +494,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
     });
 
+    quill.clipboard.addMatcher('span.summary-ref', (node: Node, delta: any) => {
+      const refValue = (node as HTMLElement).getAttribute('data-ref') ?? '';
+      delta.ops = [{ insert: `[${refValue}]`, attributes: { reference: refValue } }];
+      return delta;
+    });
+
     const handleTextChange = () => {
       if (internalUpdateRef.current) {
         return;
@@ -649,16 +677,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       if (range && range.length > 0) {
         quill.deleteText(range.index, range.length, 'silent');
       }
-      quill.clipboard.dangerouslyPasteHTML(
-        insertIndex,
-        `<span class="summary-ref" data-ref="${cleaned}">${display}</span>`,
-        'user'
-      );
+      quill.insertText(insertIndex, display, 'user');
+      quill.formatText(insertIndex, display.length, 'reference', cleaned, 'user');
       quill.setSelection(insertIndex + display.length, 0, 'silent');
-      applyReferenceDecorations();
       updateMarkdownState();
     });
-  }, [applyReferenceDecorations, updateMarkdownState, withEditor]);
+  }, [updateMarkdownState, withEditor]);
 
   const handleSave = useCallback(async () => {
     if (!hasChanges || saveStatus === 'saving') {
