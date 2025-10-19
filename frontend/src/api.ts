@@ -105,18 +105,6 @@ export interface ChatMessagePayload {
     content: string;
 }
 
-export interface ChatResponse {
-    reply: string;
-}
-
-export const sendAssistantChat = async (messages: ChatMessagePayload[], systemPrompt?: string) => {
-    const response = await apiClient.post<ChatResponse>('/assistant/chat', {
-        messages,
-        systemPrompt,
-    });
-    return response.data;
-};
-
 // Enhanced fetch with retry for streaming
 const fetchWithRetry = async (
     url: string,

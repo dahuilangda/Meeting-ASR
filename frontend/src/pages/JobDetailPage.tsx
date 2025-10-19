@@ -36,6 +36,7 @@ export function JobDetailPage() {
     const [leftPanelWidth, setLeftPanelWidth] = useState(60); // percentage
     const [isResizing, setIsResizing] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
+    const summarizeLockRef = useRef(false);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -168,6 +169,8 @@ export function JobDetailPage() {
     
     const handleSummarize = async () => {
         if (!jobId) return;
+        if (summarizeLockRef.current) return;
+        summarizeLockRef.current = true;
         setActiveTab('summary'); // Switch to summary tab immediately
         setIsSummarizing(true);
         try {
@@ -184,6 +187,7 @@ export function JobDetailPage() {
             }
             alert(`Failed to generate summary: ${errorMessage}`);
         } finally {
+            summarizeLockRef.current = false;
             setIsSummarizing(false);
         }
     };
@@ -359,8 +363,7 @@ export function JobDetailPage() {
                                 transcriptSegments={transcriptSegments}
                                 onSegmentClick={handleSegmentReference}
                                 onSummaryUpdate={(updatedSummary) => {
-                                    // Update the job state with the new summary
-                                    setJob({...job, summary: updatedSummary});
+                                    setJob(prev => prev ? { ...prev, summary: updatedSummary } : prev);
                                 }}
                             />
                         </div>

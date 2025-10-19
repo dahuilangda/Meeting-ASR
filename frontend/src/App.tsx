@@ -6,7 +6,6 @@ import { DashboardPage } from './pages/DashboardPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { UserSettingsPage } from './pages/UserSettingsPage';
 import { AdminPage } from './pages/AdminPage';
-import ErrorBoundary from './components/ErrorBoundary';
 import NetworkStatus from './components/NetworkStatus';
 import { setupGlobalErrorHandlers, logEnvironmentInfo } from './utils/globalErrorHandlers';
 
@@ -30,53 +29,51 @@ function App() {
   }, []);
 
   return (
-    <ErrorBoundary>
-      <NetworkStatus>
-        <BrowserRouter
+    <NetworkStatus>
+      <BrowserRouter
         future={{
           v7_startTransition: true,
           v7_relativeSplatPath: true,
         }}
       >
         <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route 
-          path="/" 
-          element={
-            <PrivateRoute>
-              <DashboardPage />
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/jobs/:jobId"
-          element={
-            <PrivateRoute>
-              <JobDetailPage />
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/settings"
-          element={
-            <PrivateRoute>
-              <UserSettingsPage />
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/admin"
-          element={
-            <PrivateRoute>
-              <AdminPage />
-            </PrivateRoute>
-          }
-        />
-      </Routes>
-    </BrowserRouter>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route
+            path="/"
+            element={
+              <PrivateRoute>
+                <DashboardPage />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/jobs/:jobId"
+            element={
+              <PrivateRoute>
+                <JobDetailPage />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <PrivateRoute>
+                <UserSettingsPage />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <PrivateRoute>
+                <AdminPage />
+              </PrivateRoute>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
     </NetworkStatus>
-    </ErrorBoundary>
   );
 }
 

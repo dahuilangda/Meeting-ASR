@@ -7,26 +7,27 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
 - **User Authentication**: Secure login and registration system
 - **Audio Upload**: Upload audio/video files for transcription
 - **Transcript Management**: View and manage transcribed content
-- **AI Transcript Optimization**: One-click optimization with LLM
 - **Interactive Transcript Display**: Speaker-separated transcript with timestamps
 - **Click-to-Play**: Click on transcript segments to jump to corresponding audio
 - **Additional Processing**: Summarization capabilities
 - **Transcript Editing Persistence**: Save inline transcript edits back to the backend
+- **Rich Summary Editor**: Word-style meeting minutes editor with formatting toolbar and quick references
 - **Meeting Copilot Chat**: Ask contextual questions through an AI assistant dialog
 - **Responsive Design**: Works on desktop and mobile devices
 
 ## New Features Added
-
-### AI Transcript Enhancement
-- 'Optimize with AI' button for comprehensive transcript improvement
-- Improves readability, fixes grammatical errors, and organizes conversation flow
-- Maintains speaker labels during optimization
 
 ### Improved Transcript Editor
 - Segment-based display with speaker identification
 - Timestamps for each transcript segment
 - Visual distinction between different speakers
 - Clickable segments for direct audio navigation
+
+### Meeting Summary Editor
+- Word-style editing surface with headings, lists, alignments, and inline formatting
+- Quick reference palette with search for transcript segment citations
+- Automatically preserves AI-generated Markdown/HTML formatting in the editor
+- Keyboard shortcuts (Ctrl/Cmd + B/I/U, Ctrl/Cmd + S) and save status indicator for smooth workflow
 
 ### Audio Synchronization
 - Click on any transcript segment to jump to the corresponding audio position
@@ -87,7 +88,8 @@ Builds the app for production deployment.
 
 ## Project Structure
 
-- `src/components/TranscriptEditor.tsx` - Enhanced transcript editor with AI optimization and click-to-play
+- `src/components/TranscriptEditor.tsx` - Enhanced transcript editor with click-to-play support
+- `src/components/SummaryWithReferences.tsx` - Rich meeting summary editor with formatting toolbar
 - `src/pages/JobDetailPage.tsx` - Updated page with new transcript editor component
 - `src/components/AssistantChat.tsx` - Meeting Copilot chat dialog implementation
 - `src/api.ts` - API client configuration

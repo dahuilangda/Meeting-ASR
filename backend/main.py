@@ -196,10 +196,7 @@ from pyannote.audio import Pipeline
 import pandas as pd
 import subprocess
 import tempfile
-import os
 import librosa
-import numpy as np
-from transformers import pipeline
 
 def ensure_audio_format(filepath: str) -> str:
     """
@@ -241,79 +238,6 @@ def ensure_audio_format(filepath: str) -> str:
     else:
         # For already compatible format, return as-is
         return filepath
-
-def optimize_transcript_with_llm(transcript: str) -> str:
-    """
-    Uses a large language model to optimize the transcript.
-    This can include fixing grammatical errors, improving sentence structure, 
-    clarifying unclear segments, and organizing the conversation better.
-    """
-    import os
-    from openai import OpenAI
-    import httpx
-    import ssl
-    
-    # Initialize OpenAI client, handling potential SSL issues with custom endpoints
-    try:
-        # First, try with default settings
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
-    except Exception as init_error:
-        logger.warning(f"Initial OpenAI client setup failed: {init_error}")
-        # Handle SSL certificate issues for custom endpoints
-        try:
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            
-            # Create httpx client with SSL verification disabled for custom endpoints
-            http_client = httpx.Client(
-                verify=False,  # Disable SSL verification for self-signed certificates
-                timeout=60.0   # Increase timeout
-            )
-            
-            client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY"), 
-                base_url=os.getenv("OPENAI_BASE_URL"),
-                http_client=http_client
-            )
-        except Exception as e:
-            logger.error(f"Error initializing OpenAI client: {e}")
-            # If client initialization fails completely, return original transcript
-            return transcript
-    
-    try:
-        # Create a prompt to optimize the transcript
-        prompt = f"""
-        请优化以下会议转录文本。这是一段语音转文字的结果，可能存在一些错误和不连贯的地方。
-        请进行以下处理：
-        1. 修正明显的错别字和语法错误
-        2. 保持说话人标识不变（例如[SPEAKER_00]、[SPEAKER_01]等）
-        3. 让对话更连贯和易读
-        4. 保持原文的核心意思不变
-        5. 如果有不完整的句子，根据上下文补全或合理组织
-        
-        以下是需要优化的转录文本：
-        {transcript}
-        
-        请输出优化后的转录文本：
-        """
-        
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "You are an expert at improving speech-to-text transcriptions. You maintain speaker labels while improving readability, fixing obvious errors, and making the conversation more coherent."},
-                {"role": "user", "content": prompt}
-            ],
-            model=os.getenv("OPENAI_MODEL_NAME"),
-            temperature=0.3,  # Lower temperature for more consistent output
-            timeout=600  # Increase timeout for longer operations
-        )
-        
-        optimized_text = chat_completion.choices[0].message.content
-        return optimized_text
-        
-    except Exception as e:
-        logger.error(f"Error optimizing transcript with LLM: {e}")
-        # If LLM optimization fails, return the original transcript
-        return transcript
 
 def process_audio_file(job_id: int, filepath: str, db_session_class):
     db = db_session_class()
@@ -1212,23 +1136,6 @@ Please analyze the transcript and create the structured summary following the sy
         raise HTTPException(status_code=500, detail=f"Failed to generate summary: {e}")
 
 
-@app.post("/jobs/{job_id}/optimize", response_model=schemas.Job)
-async def optimize_job_transcript(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
-    if not job: raise HTTPException(status_code=404, detail="Job not found")
-    if not job.transcript: raise HTTPException(status_code=400, detail="Job has no transcript to optimize.")
-
-    try:
-        # Use the existing optimization function
-        optimized_transcript = optimize_transcript_with_llm(job.transcript)
-        crud.update_job_transcript(db, job_id=job_id, transcript=optimized_transcript)
-        
-        # Return the updated job with optimized transcript
-        updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
-        return updated_job
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to optimize transcript: {e}")
-
 class UpdateSummaryRequest(BaseModel):
     summary: str
 
@@ -1254,9 +1161,6 @@ class ChatRequest(BaseModel):
 
     messages: List[ChatMessage]
     system_prompt: str | None = Field(default=None, alias="systemPrompt")
-
-class ChatResponse(BaseModel):
-    reply: str
 
 @app.post("/jobs/{job_id}/update_summary")
 async def update_summary(job_id: int, request: UpdateSummaryRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1314,46 +1218,6 @@ async def update_job_transcript_endpoint(job_id: int, request: TranscriptUpdateR
         raise HTTPException(status_code=404, detail="Job not found")
     hydrate_job_transcript_from_disk(refreshed_job)
     return refreshed_job
-
-@app.post("/assistant/chat", response_model=ChatResponse)
-async def assistant_chat(request: ChatRequest, current_user: schemas.User = Depends(get_current_user)):
-    if not request.messages:
-        raise HTTPException(status_code=400, detail="At least one message is required.")
-
-    client = create_openai_client()
-
-    conversation: List[dict] = []
-    system_prompt = (request.system_prompt or "You are a knowledgeable meeting assistant who helps users understand transcripts, summaries, and provides actionable guidance. Provide concise, helpful answers.").strip()
-    if system_prompt:
-        conversation.append({"role": "system", "content": system_prompt})
-
-    has_user_message = False
-    for message in request.messages:
-        role = (message.role or "user").lower()
-        if role not in {"user", "assistant", "system"}:
-            role = "user"
-        content = (message.content or "").strip()
-        if not content:
-            continue
-        if role == "user":
-            has_user_message = True
-        conversation.append({"role": role, "content": content})
-
-    if not has_user_message:
-        raise HTTPException(status_code=400, detail="Chat requires at least one user message.")
-
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=conversation,
-            model=os.getenv("OPENAI_MODEL_NAME"),
-            timeout=600,
-            temperature=0.4
-        )
-        reply = chat_completion.choices[0].message.content
-        return ChatResponse(reply=reply)
-    except Exception as e:
-        logger.error(f"Error in assistant_chat: {e}")
-        raise HTTPException(status_code=500, detail=f"Assistant chat failed: {e}")
 
 @app.post("/assistant/chat/stream")
 async def assistant_chat_stream(request: ChatRequest, current_user: schemas.User = Depends(get_current_user)):
@@ -1447,58 +1311,6 @@ async def assistant_chat_stream(request: ChatRequest, current_user: schemas.User
             "X-Accel-Buffering": "no"
         }
     )
-
-@app.post("/jobs/{job_id}/optimize_segment", response_model=dict)
-async def optimize_segment(job_id: int, request: dict, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Verify that the job belongs to the current user
-    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    try:
-        # Extract text and speaker from the request
-        text = request.get("text", "")
-        speaker = request.get("speaker", "")
-        
-        # Create a prompt that includes the speaker context to maintain proper speaker labels
-        client = create_openai_client()
-        
-        # Create prompt with context about maintaining speaker labels
-        prompt = f"""
-        请优化以下会议转录段落。这是{speaker}的发言，是一段语音转文字的结果，可能存在一些错误和不连贯的地方。
-        请进行以下处理：
-        1. 修正明显的错别字和语法错误
-        2. 让表达更连贯和易读
-        3. 保持说话人标识不变（例如[{speaker}]）
-        4. 保持原文的核心意思不变
-        5. 如果有不完整的句子，根据上下文补全或合理组织
-        6. 确保优化后的内容适合会议记录的形式
-        7. 保持句子的完整性，不要截断
-
-        以下是需要优化的转录段落：
-        {text}
-
-        请输出优化后的转录段落：
-        """
-        
-        chat_completion = await asyncio.to_thread(
-            client.chat.completions.create,
-            messages=[
-                {"role": "system", "content": "You are an expert at improving speech-to-text transcriptions. You maintain speaker context while improving readability, fixing obvious errors, and making the conversation more coherent."},
-                {"role": "user", "content": prompt}
-            ],
-            model=os.getenv("OPENAI_MODEL_NAME") or "gpt-3.5-turbo",  # Fallback to gpt-3.5-turbo if not specified
-            temperature=0.3,  # Lower temperature for more consistent output
-            timeout=60  # Increase timeout for longer operations
-        )
-        
-        optimized_text = chat_completion.choices[0].message.content
-        return {"optimized_text": optimized_text}
-
-    except Exception as e:
-        logger.error(f"Error optimizing segment: {e}")
-        # If LLM optimization fails, return the original text
-        return {"optimized_text": text}
 
 def parse_transcript_segments(transcript_text):
     """解析转录文本为段落列表，用于摘要生成中的引用编号"""

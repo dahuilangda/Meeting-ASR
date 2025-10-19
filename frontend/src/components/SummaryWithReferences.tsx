@@ -1,1483 +1,904 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react';
+import Quill from 'quill';
+import 'quill/dist/quill.snow.css';
+import TurndownService from 'turndown';
+import type { Options as TurndownOptions } from 'turndown';
+import { marked } from 'marked';
 import { apiClient } from '../api';
 
+interface StructuredOverview {
+  content?: string;
+  references?: number[];
+}
+
+interface StructuredDiscussion {
+  topic?: string;
+  summary?: string;
+  references?: number[];
+}
+
+interface StructuredDecision {
+  decision?: string;
+  responsible_party?: string;
+  references?: number[];
+}
+
+interface StructuredActionItem {
+  action?: string;
+  owner?: string;
+  deadline?: string;
+  references?: number[];
+}
+
+interface StructuredIssue {
+  issue?: string;
+  references?: number[];
+}
+
+interface StructuredSummary {
+  overview?: StructuredOverview;
+  key_discussions?: StructuredDiscussion[];
+  decisions?: StructuredDecision[];
+  action_items?: StructuredActionItem[];
+  unresolved_issues?: StructuredIssue[];
+  data_and_metrics?: Array<{
+    metric?: string;
+    value?: string;
+    context?: string;
+    references?: number[];
+  }>;
+  concerns_and_risks?: Array<{
+    concern?: string;
+    references?: number[];
+  }>;
+}
+
 interface SummaryData {
-  formatted_content: string;
-  structured_data: {
-    overview?: {
-      content: string;
-      references: number[];
-    };
-    key_discussions?: Array<{
-      topic: string;
-      summary: string;
-      references: number[];
-    }>;
-    decisions?: Array<{
-      decision: string;
-      responsible_party: string;
-      references: number[];
-    }>;
-    action_items?: Array<{
-      action: string;
-      owner: string;
-      deadline?: string;
-      references: number[];
-    }>;
-    unresolved_issues?: Array<{
-      issue: string;
-      references: number[];
-    }>;
-  };
+  formatted_content?: string;
+  structured_data?: StructuredSummary;
+}
+
+interface TranscriptSegment {
+  index: number;
+  speaker: string;
+  text: string;
+  start_time: number;
+  end_time: number;
 }
 
 interface SummaryWithReferencesProps {
   summary: string | null;
   jobId: number;
-  transcriptSegments: Array<{
-    index: number;
-    speaker: string;
-    text: string;
-    start_time: number;
-    end_time: number;
-  }>;
+  transcriptSegments: TranscriptSegment[];
   onSegmentClick?: (segmentIndex: number | number[]) => void;
   onSummaryUpdate?: (updatedSummary: string) => void;
 }
 
+type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
+
+const formatReferences = (refs?: number[]): string => {
+  if (!refs || refs.length === 0) {
+    return '';
+  }
+  return refs.map(ref => `[${ref}]`).join(' ');
+};
+
+const buildMarkdownFromStructuredData = (structured?: StructuredSummary): string => {
+  if (!structured) {
+    return '';
+  }
+
+  const blocks: string[] = [];
+
+  if (structured.overview?.content) {
+    const refs = formatReferences(structured.overview.references);
+    blocks.push(`## 会议概览\n\n${structured.overview.content}${refs ? ` ${refs}` : ''}`);
+  }
+
+  if (structured.key_discussions?.length) {
+    const section: string[] = ['## 主要讨论内容'];
+    structured.key_discussions.forEach(item => {
+      if (!item.summary && !item.topic) {
+        return;
+      }
+      const heading = item.topic ? `### ${item.topic}` : '### 讨论';
+      const refs = formatReferences(item.references);
+      section.push(`${heading}\n\n${item.summary ?? ''}${refs ? ` ${refs}` : ''}`);
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  if (structured.data_and_metrics?.length) {
+    const section: string[] = ['## 数据与指标'];
+    structured.data_and_metrics.forEach(item => {
+      const pieces: string[] = [];
+      if (item.metric) {
+        pieces.push(`**${item.metric}：**`);
+      }
+      if (item.value) {
+        pieces.push(item.value);
+      }
+      if (item.context) {
+        pieces.push(`（${item.context}）`);
+      }
+      const refs = formatReferences(item.references);
+      section.push(`${pieces.join(' ')}${refs ? ` ${refs}` : ''}`.trim());
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  if (structured.concerns_and_risks?.length) {
+    const section: string[] = ['## 风险与关注点'];
+    structured.concerns_and_risks.forEach(item => {
+      if (!item.concern) {
+        return;
+      }
+      const refs = formatReferences(item.references);
+      section.push(`${item.concern}${refs ? ` ${refs}` : ''}`);
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  if (structured.decisions?.length) {
+    const section: string[] = ['## 决策事项'];
+    structured.decisions.forEach(item => {
+      if (!item.decision && !item.responsible_party) {
+        return;
+      }
+      const lines: string[] = [];
+      if (item.decision) {
+        lines.push(`**决策：** ${item.decision}`);
+      }
+      if (item.responsible_party) {
+        lines.push(`**负责人：** ${item.responsible_party}`);
+      }
+      const refs = formatReferences(item.references);
+      section.push(`${lines.join('\n')}${refs ? `\n${refs}` : ''}`);
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  if (structured.action_items?.length) {
+    const section: string[] = ['## 行动项目'];
+    structured.action_items.forEach(item => {
+      if (!item.action) {
+        return;
+      }
+      const lines: string[] = [`**行动项：** ${item.action}`];
+      if (item.owner) {
+        lines.push(`**负责人：** ${item.owner}`);
+      }
+      if (item.deadline) {
+        lines.push(`**截止日期：** ${item.deadline}`);
+      }
+      const refs = formatReferences(item.references);
+      section.push(`${lines.join('\n')}${refs ? `\n${refs}` : ''}`);
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  if (structured.unresolved_issues?.length) {
+    const section: string[] = ['## 未解决问题'];
+    structured.unresolved_issues.forEach(item => {
+      if (!item.issue) {
+        return;
+      }
+      const refs = formatReferences(item.references);
+      section.push(`**问题：** ${item.issue}${refs ? ` ${refs}` : ''}`);
+    });
+    blocks.push(section.join('\n\n'));
+  }
+
+  return blocks.join('\n\n').trim();
+};
+
+const wrapReferencesWithSpans = (html: string): string => {
+  if (!html || typeof window === 'undefined') {
+    return html;
+  }
+
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  const pattern = /\[\[?(\d+(?:-\d+)?)\]\]?/g;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const targets: Text[] = [];
+
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (!node.parentElement) {
+      continue;
+    }
+    if (node.parentElement.closest('.summary-ref')) {
+      continue;
+    }
+    if (!pattern.test(node.data)) {
+      continue;
+    }
+    targets.push(node);
+  }
+
+  targets.forEach(node => {
+    const fragment = document.createDocumentFragment();
+    const text = node.data;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+
+    while ((match = pattern.exec(text)) !== null) {
+      const fullMatch = match[0];
+      const ref = match[1];
+      const start = match.index;
+      if (start > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+      }
+      const span = document.createElement('span');
+      span.className = 'summary-ref';
+      span.setAttribute('data-ref', ref);
+      span.textContent = `[${ref}]`;
+      fragment.appendChild(span);
+      lastIndex = start + fullMatch.length;
+    }
+
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    node.parentNode?.replaceChild(fragment, node);
+  });
+
+  return container.innerHTML;
+};
+
 export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   summary,
   jobId,
-  transcriptSegments,
+  transcriptSegments: _transcriptSegments,
   onSegmentClick,
   onSummaryUpdate
 }) => {
-  const [, setSummaryData] = useState<SummaryData | null>(null);
-  const [editedContent, setEditedContent] = useState('');
-  const [originalContent, setOriginalContent] = useState('');
+  const editorHostRef = useRef<HTMLDivElement>(null);
+  const quillRef = useRef<Quill | null>(null);
+  const internalUpdateRef = useRef(false);
+  const saveStatusTimer = useRef<number | null>(null);
+  const [baseSummaryData, setBaseSummaryData] = useState<SummaryData | null>(null);
+  const [initialMarkdown, setInitialMarkdown] = useState('');
+  const [currentMarkdown, setCurrentMarkdown] = useState('');
+  const [pendingHtml, setPendingHtml] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [isUnmounted, setIsUnmounted] = useState(false);
-  const editorRef = useRef<HTMLDivElement>(null);
-  const [originalHtml, setOriginalHtml] = useState('');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [toolbarState, setToolbarState] = useState<{
+    bold: boolean;
+    italic: boolean;
+    header: 0 | 2 | 3;
+    list: '' | 'ordered' | 'bullet';
+  }>({ bold: false, italic: false, header: 0, list: '' });
 
-  // Safe DOM operation wrapper
-  const safeSetInnerHTML = useCallback((element: HTMLElement | null, html: string) => {
-    if (!element || isUnmounted) return false;
+  const turndown = useMemo(() => {
+    const options: TurndownOptions = {
+      headingStyle: 'atx',
+      hr: '---',
+      bulletListMarker: '-'
+    };
+    const service = new TurndownService(options);
 
-    try {
-      element.innerHTML = html;
-      return true;
-    } catch (error) {
-      console.warn('Error setting innerHTML:', error);
-      return false;
-    }
-  }, [isUnmounted]);
-
-  // Undo/Redo state management
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const maxHistorySize = 50; // Limit history size to prevent memory issues
-
-  const convertMarkdownToHtml = useCallback((markdown: string) => {
-    if (!markdown.trim()) {
-      return '<p><br></p>';
-    }
-
-    let html = markdown;
-
-    // Split into lines to handle line breaks properly
-    const lines = html.split('\n');
-    let processedLines: string[] = [];
-    let i = 0;
-    let currentParagraph: string[] = [];
-    let inParagraph = false;
-
-    while (i < lines.length) {
-      const line = lines[i];
-      const trimmedLine = line.trim();
-
-      // Handle headers
-      if (trimmedLine.startsWith('###### ')) {
-        // Close current paragraph if open
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
+    service.addRule('referenceSpan', {
+      filter: (node: Node) =>
+        node instanceof HTMLElement && node.classList.contains('summary-ref'),
+      replacement: (_content: string, node: Node) => {
+        if (!(node instanceof HTMLElement)) {
+          return '';
         }
-        processedLines.push(`<h6>${trimmedLine.substring(7)}</h6>`);
-      } else if (trimmedLine.startsWith('##### ')) {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
+        const refAttr = node.getAttribute('data-ref');
+        if (refAttr) {
+          return `[${refAttr}]`;
         }
-        processedLines.push(`<h5>${trimmedLine.substring(6)}</h5>`);
-      } else if (trimmedLine.startsWith('#### ')) {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-        processedLines.push(`<h4>${trimmedLine.substring(5)}</h4>`);
-      } else if (trimmedLine.startsWith('### ')) {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-        processedLines.push(`<h3>${trimmedLine.substring(4)}</h3>`);
-      } else if (trimmedLine.startsWith('## ')) {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-        processedLines.push(`<h2>${trimmedLine.substring(3)}</h2>`);
-      } else if (trimmedLine.startsWith('# ')) {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-        processedLines.push(`<h1>${trimmedLine.substring(2)}</h1>`);
+        const text = (node.textContent ?? '').replace(/\[|\]/g, '').trim();
+        return text ? `[${text}]` : '';
       }
-      // Handle list items
-      else if (trimmedLine.match(/^(\d+)\. .+$/)) {
-        // Close current paragraph if open
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-
-        let listItems = [];
-        // Collect consecutive numbered list items
-        while (i < lines.length && lines[i].trim().match(/^(\d+)\. .+$/)) {
-          const listLine = lines[i].trim();
-          const formattedListLine = listLine
-            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.+?)\*/g, '<em>$1</em>')
-            .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
-          listItems.push(`<li>${formattedListLine.replace(/^(\d+)\. /, '$1. ')}</li>`);
-          i++;
-        }
-        processedLines.push(`<ol>${listItems.join('')}</ol>`);
-        continue; // Skip the i++ since we already incremented it
-      }
-      else if (trimmedLine.startsWith('- ')) {
-        // Close current paragraph if open
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-
-        let listItems = [];
-        // Collect consecutive bullet list items
-        while (i < lines.length && lines[i].trim().startsWith('- ')) {
-          const listLine = lines[i].trim();
-          const formattedListLine = listLine
-            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.+?)\*/g, '<em>$1</em>')
-            .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
-          listItems.push(`<li>${formattedListLine.substring(2)}</li>`);
-          i++;
-        }
-        processedLines.push(`<ul>${listItems.join('')}</ul>`);
-        continue; // Skip the i++ since we already incremented it
-      }
-      // Handle empty lines (paragraph breaks)
-      else if (trimmedLine === '') {
-        if (inParagraph && currentParagraph.length > 0) {
-          processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-          currentParagraph = [];
-          inParagraph = false;
-        }
-        // Add empty paragraph for line breaks (simplified logic)
-        processedLines.push('<p><br></p>');
-      }
-      // Handle regular text (part of paragraph)
-      else {
-        let formattedLine = line
-          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-          .replace(/\*(.+?)\*/g, '<em>$1</em>')
-          .replace(/\[\[(\d+(?:-\d+)?)\]\]/g, '<span class="transcript-ref" data-ref="$1">$1</span>');
-
-        currentParagraph.push(formattedLine);
-        inParagraph = true;
-      }
-
-      i++;
-    }
-
-    // Close any open paragraph at the end
-    if (inParagraph && currentParagraph.length > 0) {
-      processedLines.push(`<p>${currentParagraph.join('<br>')}</p>`);
-    }
-
-    // Join all processed content
-    let finalHtml = processedLines.join('');
-
-    // Clean up any double empty paragraphs
-    finalHtml = finalHtml.replace(/<p><br><\/p><p><br><\/p>/g, '<p><br></p>');
-
-    return finalHtml;
-  }, []);
-
-  const getHtmlContent = useCallback(() => convertMarkdownToHtml(editedContent), [convertMarkdownToHtml, editedContent]);
-
-  const normalizeEditorHtml = useCallback((html: string) => {
-    return html
-      // Ensure consistent paragraph structure
-      .replace(/<div><br><\/div>/g, '<p><br></p>')
-      .replace(/<div([^>]*)>(.*?)<\/div>/g, '<p>$2</p>')
-      // Handle multiple consecutive line breaks
-      .replace(/(<br\s*\/?>){3,}/g, '<br><br>')
-      // Clean up empty paragraphs
-      .replace(/<p><\/p>/g, '<p><br></p>')
-      // Ensure proper spacing around elements
-      .replace(/><(p|div|h[1-6]|ul|ol)>/g, '><$1>');
-  }, []);
-
-  const normalizeHtmlForComparison = useCallback((html: string) => html.replace(/\s+/g, ' ').trim(), []);
-
-  const hasContentChanged = useCallback((markdown: string, html?: string) => {
-    const originalNormalizedHtml = normalizeHtmlForComparison(originalHtml || '');
-    const htmlChanged = html !== undefined
-      ? normalizeHtmlForComparison(html) !== originalNormalizedHtml
-      : false;
-    return htmlChanged || markdown !== originalContent;
-  }, [originalContent, originalHtml, normalizeHtmlForComparison]);
-
-  useEffect(() => {
-    if (summary) {
-      try {
-        // Reset editor initialization so new summaries re-render correctly
-        setIsInitialized(false);
-        setIsEditing(false);
-        setHasChanges(false);
-
-        const parsed = JSON.parse(summary);
-        setSummaryData(parsed);
-
-        // Try different possible content fields
-        let contentToUse = '';
-
-        // Check for formatted_content (new format)
-        if (parsed.formatted_content && parsed.formatted_content.trim()) {
-          contentToUse = parsed.formatted_content;
-        }
-        // Check for structured_data with overview (new enhanced format)
-        else if (parsed.structured_data && parsed.structured_data.overview) {
-          // Build content from structured data
-          const structured = parsed.structured_data;
-          let content = '';
-
-          if (structured.overview && structured.overview.content) {
-            content += `## Overview\n${structured.overview.content}\n\n`;
-          }
-
-          if (structured.key_discussions && structured.key_discussions.length > 0) {
-            content += `## Key Discussions\n`;
-            structured.key_discussions.forEach((discussion: any) => {
-              content += `### ${discussion.topic}\n${discussion.summary}\n\n`;
-            });
-          }
-
-          if (structured.decisions && structured.decisions.length > 0) {
-            content += `## Decisions\n`;
-            structured.decisions.forEach((decision: any) => {
-              content += `- **${decision.decision}** - ${decision.responsible_party}\n\n`;
-            });
-          }
-
-          if (structured.action_items && structured.action_items.length > 0) {
-            content += `## Action Items\n`;
-            structured.action_items.forEach((item: any) => {
-              content += `- ${item.action} - ${item.owner}${item.deadline ? ` (${item.deadline})` : ''}\n\n`;
-            });
-          }
-
-          if (structured.unresolved_issues && structured.unresolved_issues.length > 0) {
-            content += `## Unresolved Issues\n`;
-            structured.unresolved_issues.forEach((issue: any) => {
-              content += `- ${issue.issue}\n\n`;
-            });
-          }
-
-          contentToUse = content;
-        }
-        // Fallback to the summary itself if it's a string
-        else if (typeof summary === 'string' && summary.trim()) {
-          contentToUse = summary;
-        }
-
-        if (contentToUse && contentToUse.trim()) {
-          // Process the content to handle HTML references properly
-          let processedContent = contentToUse
-            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)">\[(\d+)\]<\/a>/g,
-              '[[$2]]')
-            .replace(/<a href="#" class="transcript-ref" data-segment="(\d+)" data-range="(\d+-\d+)">\[(\d+-\d+)\]<\/a>/g,
-              '[[$3]]');
-
-          // Convert HTML to markdown format for editing
-          processedContent = processedContent
-            // Headers
-            .replace(/<h[1-6]>(.+?)<\/h[1-6]>/gi, (match: string, content: string) => {
-              const level = match.match(/h(\d)/)?.[1] || '2';
-              return '#'.repeat(parseInt(level)) + ' ' + content + '\n\n';
-            })
-            // Bold text
-            .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
-            // Line breaks and paragraphs
-            .replace(/<\/p>/g, '\n\n')
-            .replace(/<p>/g, '')
-            // Lists
-            .replace(/<ul>/gi, '')
-            .replace(/<\/ul>/gi, '\n')
-            .replace(/<li>(.+?)<\/li>/gi, '- $1\n')
-            // Line breaks
-            .replace(/<br\s*\/?>/gi, '\n')
-            // Clean up extra whitespace
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-
-          setEditedContent(processedContent);
-          setOriginalContent(processedContent);
-          // Initialize history with the first content
-          setHistory([processedContent]);
-          setHistoryIndex(0);
-          const initialHtml = convertMarkdownToHtml(processedContent);
-          const editorElement = editorRef.current;
-          if (editorElement && !isUnmounted) {
-            safeSetInnerHTML(editorElement, initialHtml);
-          }
-          setOriginalHtml(normalizeEditorHtml(initialHtml));
-          setIsInitialized(true);
-        } else {
-          // Fallback: if no content, create a simple message
-          const fallbackContent = 'No summary content available. Please generate a new summary.';
-          setEditedContent(fallbackContent);
-          setOriginalContent(fallbackContent);
-          // Initialize history with the fallback content
-          setHistory([fallbackContent]);
-          setHistoryIndex(0);
-          const fallbackHtml = convertMarkdownToHtml(fallbackContent);
-          const editorElement = editorRef.current;
-          if (editorElement && !isUnmounted) {
-            safeSetInnerHTML(editorElement, fallbackHtml);
-          }
-          setOriginalHtml(normalizeEditorHtml(fallbackHtml));
-          setIsInitialized(true);
-        }
-      } catch (error) {
-        console.error('Error parsing summary:', error);
-        // Fallback for old format summaries - convert to markdown
-        setSummaryData({
-          formatted_content: summary,
-          structured_data: {}
-        });
-        setEditedContent(summary);
-        setOriginalContent(summary);
-        // Initialize history with the summary content
-        setHistory([summary]);
-        setHistoryIndex(0);
-        const fallbackHtml = convertMarkdownToHtml(summary);
-        const editorElement = editorRef.current;
-        if (editorElement && !isUnmounted) {
-          safeSetInnerHTML(editorElement, fallbackHtml);
-        }
-        setOriginalHtml(normalizeEditorHtml(fallbackHtml));
-        setIsInitialized(true);
-      }
-    }
-  }, [summary, convertMarkdownToHtml, isUnmounted, safeSetInnerHTML, normalizeEditorHtml]);
-
-  // Handle reference click
-  const handleReferenceClick = (refAttr: string) => {
-    if (onSegmentClick) {
-      if (refAttr.includes('-')) {
-        // Handle range references like [[2-3]]
-        const [start, end] = refAttr.split('-').map(Number);
-        const range = [];
-        for (let i = start; i <= end; i++) {
-          range.push(i);
-        }
-          onSegmentClick(range);
-      } else {
-        // Handle single reference like [[1]]
-          onSegmentClick(parseInt(refAttr));
-      }
-    }
-  };
-
-
-  // Convert HTML back to markdown with improved line break handling
-  const htmlToMarkdown = useCallback((html: string): string => {
-    if (!html) return '';
-
-    let markdown = html
-      // Handle headers first (before paragraph processing)
-      .replace(/<h1>(.+?)<\/h1>/gi, '# $1\n\n')
-      .replace(/<h2>(.+?)<\/h2>/gi, '## $1\n\n')
-      .replace(/<h3>(.+?)<\/h3>/gi, '### $1\n\n')
-      .replace(/<h4>(.+?)<\/h4>/gi, '#### $1\n\n')
-      .replace(/<h5>(.+?)<\/h5>/gi, '##### $1\n\n')
-      .replace(/<h6>(.+?)<\/h6>/gi, '###### $1\n\n')
-      // Handle bold and italic
-      .replace(/<strong>(.+?)<\/strong>/gi, '**$1**')
-      .replace(/<em>(.+?)<\/em>/gi, '*$1*')
-      // Handle transcript references
-      .replace(/<span class="transcript-ref"[^>]*data-ref="([^"]*)"[^>]*>([^<]+)<\/span>/gi, '[[$1]]')
-      // Handle lists (preserve structure)
-      .replace(/<ol>(.*?)<\/ol>/gis, (match, content) => {
-        return content.replace(/<li>(.+?)<\/li>/gi, '$1\n').replace(/^\d+\.\s/, '');
-      })
-      .replace(/<ul>(.*?)<\/ul>/gis, (match, content) => {
-        return content.replace(/<li>(.+?)<\/li>/gi, '- $1\n');
-      })
-      // Handle paragraphs with better line break preservation
-      .replace(/<p>(.*?)<\/p>/gis, (match, content) => {
-        // If paragraph is empty or contains only <br>, treat it as paragraph break (no extra content)
-        if (!content.trim() || content.trim() === '<br>' || content.trim() === '<br/>') {
-          return '\n\n'; // Just paragraph break, no extra empty lines
-        }
-        // For regular paragraphs, preserve internal line breaks and add paragraph breaks
-        const processedContent = content
-          .replace(/<br\s*\/?>/gi, '\n') // Convert <br> to line breaks within paragraph
-          .replace(/&nbsp;/g, ' ') // Convert &nbsp; to regular spaces
-          .trim();
-        return processedContent + '\n\n';
-      })
-      // Handle remaining line breaks
-      .replace(/<br\s*\/?>/gi, '\n')
-      // Handle div separators (common in contentEditable)
-      .replace(/<\/div>/gi, '\n')
-      .replace(/<div[^>]*>/gi, '')
-      // Clean up HTML entities
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      // Advanced line break normalization
-      .replace(/\n{4,}/g, '\n\n\n') // Limit to max 3 consecutive line breaks
-      .replace(/[ \t]+$/gm, '') // Remove trailing spaces from each line
-      .replace(/^\s+|\s+$/g, '') // Trim leading/trailing whitespace
-      .replace(/\n[ \t]+\n/g, '\n\n') // Clean lines with only whitespace
-      .replace(/\n{3,}/g, '\n\n') // Ensure max 2 consecutive line breaks
-      // Final cleanup: ensure no empty paragraphs at start/end
-      .replace(/^\n+|\n+$/g, '');
-
-    return markdown;
-  }, []);
-
-  // Add content to history
-  const addToHistory = useCallback((content: string) => {
-    setHistory(prevHistory => {
-      let newHistory = historyIndex < prevHistory.length - 1
-        ? prevHistory.slice(0, historyIndex + 1)
-        : [...prevHistory];
-
-      newHistory.push(content);
-
-      if (newHistory.length > maxHistorySize) {
-        newHistory = newHistory.slice(-maxHistorySize);
-        setHistoryIndex(newHistory.length - 1);
-      } else {
-        setHistoryIndex(newHistory.length - 1);
-      }
-
-      return newHistory;
     });
-  }, [historyIndex, maxHistorySize]);
 
-  // Undo function
-  const undo = useCallback(() => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      setHistoryIndex(newIndex);
-      const content = history[newIndex];
-      setEditedContent(content);
-      setHasChanges(hasContentChanged(content));
-
-      // Update editor content
-      const editor = editorRef.current;
-      if (editor) {
-        const htmlContent = getHtmlContent();
-        safeSetInnerHTML(editor, htmlContent);
-      }
-    }
-  }, [historyIndex, history, hasContentChanged, getHtmlContent, safeSetInnerHTML]);
-
-  // Redo function
-  const redo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      setHistoryIndex(newIndex);
-      const content = history[newIndex];
-      setEditedContent(content);
-      setHasChanges(hasContentChanged(content));
-
-      // Update editor content
-      const editor = editorRef.current;
-      if (editor) {
-        const htmlContent = getHtmlContent();
-        safeSetInnerHTML(editor, htmlContent);
-      }
-    }
-  }, [historyIndex, history, hasContentChanged, getHtmlContent, safeSetInnerHTML]);
-
-  // Handle WYSIWYG input with auto-save
-  const handleWysiwygInput = useCallback((e: React.FormEvent<HTMLDivElement>) => {
-    e.persist();
-    const target = e.currentTarget;
-    const htmlContent = target.innerHTML;
-    const normalizedHtml = normalizeEditorHtml(htmlContent);
-
-    const markdownContent = htmlToMarkdown(normalizedHtml);
-    const contentChanged = hasContentChanged(markdownContent, normalizedHtml);
-
-    // Only add to history if content actually changed
-    if (markdownContent !== editedContent) {
-      // Use requestAnimationFrame to avoid blocking the input thread
-      requestAnimationFrame(() => {
-        if (!isUnmounted) {
-          setEditedContent(markdownContent);
-          setHasChanges(contentChanged);
-          addToHistory(markdownContent);
-        }
-      });
-    } else if (contentChanged) {
-      setHasChanges(true);
-    }
-  }, [htmlToMarkdown, editedContent, addToHistory, isUnmounted, normalizeEditorHtml, hasContentChanged]);
-
-  // Handle focus to track editing state
-  const handleEditorFocus = useCallback(() => {
-    setIsEditing(true);
+    return service;
   }, []);
 
-  // Handle blur to save content
-  const handleEditorBlur = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
-    // Small delay to allow related target to be properly set
-    setTimeout(() => {
-      // Check if component is still mounted
-      if (isUnmounted) return;
+  const enhanceHtml = useCallback((html: string) => wrapReferencesWithSpans(html), []);
 
-      // Check if focus moved outside the editor
-      const editor = editorRef.current;
-      if (editor && !editor.contains(document.activeElement)) {
-        const target = e.currentTarget;
-        const htmlContent = target.innerHTML;
-        const normalizedHtml = normalizeEditorHtml(htmlContent);
-        const markdownContent = htmlToMarkdown(normalizedHtml);
-        const contentChanged = hasContentChanged(markdownContent, normalizedHtml);
-
-        if (!isUnmounted) {
-          setEditedContent(markdownContent);
-          setHasChanges(contentChanged);
-          setIsEditing(false);
-        }
-      }
-    }, 10);
-  }, [htmlToMarkdown, isUnmounted, normalizeEditorHtml, hasContentChanged]);
-
-  // Check if selection is already formatted with the given tag
-  const isSelectionFormatted = useCallback((range: Range, tagName: string): boolean => {
-    // Check if any part of the selection is already wrapped in the specified tag
-    const startContainer = range.startContainer;
-    const endContainer = range.endContainer;
-
-    // Check start container
-    let currentElement = startContainer.nodeType === Node.TEXT_NODE
-      ? startContainer.parentElement
-      : startContainer as Element;
-
-    while (currentElement && currentElement !== document.body) {
-      if (currentElement.tagName === tagName) {
-        return true;
-      }
-      currentElement = currentElement.parentElement;
+  const parseSummary = useCallback((rawSummary: string | null) => {
+    if (!rawSummary) {
+      return {
+        base: null,
+        markdown: '',
+        html: '<p><br></p>'
+      };
     }
 
-    // Check end container if different
-    if (startContainer !== endContainer) {
-      currentElement = endContainer.nodeType === Node.TEXT_NODE
-        ? endContainer.parentElement
-        : endContainer as Element;
-
-      while (currentElement && currentElement !== document.body) {
-        if (currentElement.tagName === tagName) {
-          return true;
-        }
-        currentElement = currentElement.parentElement;
-      }
-    }
-
-    return false;
-  }, []);
-
-  // Restore focus to editor and get selection
-  const restoreEditorFocus = useCallback(() => {
-    const editor = editorRef.current;
-    if (editor) {
-      editor.focus();
-
-      // Wait a tick for focus to be restored, then get selection
-      setTimeout(() => {
-        const selection = window.getSelection();
-        if (selection && selection.rangeCount === 0) {
-          // Create a new range at the end of editor content
-          const range = document.createRange();
-          range.selectNodeContents(editor);
-          range.collapse(false);
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
-      }, 0);
-    }
-  }, []);
-
-  // Insert formatting at cursor position
-  const insertFormatting = useCallback((before: string, after: string) => {
-    // First, ensure editor has focus
-    restoreEditorFocus();
-
-    // Wait for focus to be restored before proceeding
-    setTimeout(() => {
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0) {
-        console.warn('No selection available when trying to format');
-        return;
-      }
-
-      const range = selection.getRangeAt(0);
-      const selectedText = range.toString() || '';
-
-      // Create a temporary div to hold the formatted HTML
-      const tempDiv = document.createElement('div');
-      let formattedHtml = '';
-
-      if (before === '**' && after === '**') {
-        // Bold formatting
-        if (selectedText) {
-          // Check if text is already bold
-          if (isSelectionFormatted(range, 'STRONG')) {
-            // Remove bold formatting by extracting text content
-            formattedHtml = selectedText;
-          } else {
-            // Add bold formatting
-            formattedHtml = `<strong>${selectedText}</strong>`;
-          }
-        } else {
-          // Insert placeholder text for bold when no selection
-          formattedHtml = '<strong>bold text</strong>';
-        }
-      } else if (before === '*' && after === '*') {
-        // Italic formatting
-        if (selectedText) {
-          // Check if text is already italic
-          if (isSelectionFormatted(range, 'EM')) {
-            // Remove italic formatting by extracting text content
-            formattedHtml = selectedText;
-          } else {
-            // Add italic formatting
-            formattedHtml = `<em>${selectedText}</em>`;
-          }
-        } else {
-          // Insert placeholder text for italic when no selection
-          formattedHtml = '<em>italic text</em>';
-        }
-      } else if (before.startsWith('#')) {
-        // Header formatting
-        const headerLevel = before.length;
-        formattedHtml = `<h${headerLevel}>${selectedText || 'heading'}</h${headerLevel}>`;
-      } else if (before === '- ') {
-        // Bullet list
-        formattedHtml = `<ul><li>${selectedText || 'list item'}</li></ul>`;
-      } else if (before === '1. ') {
-        // Numbered list
-        formattedHtml = `<ol><li>${selectedText || 'list item'}</li></ol>`;
-      } else {
-        // Other formatting
-        formattedHtml = selectedText || 'text';
-      }
-
-      tempDiv.innerHTML = formattedHtml;
-
-      // Insert the formatted content
-      try {
-        range.deleteContents();
-
-        // Insert all child nodes from tempDiv
-        const fragment = document.createDocumentFragment();
-        while (tempDiv.firstChild) {
-          fragment.appendChild(tempDiv.firstChild);
-        }
-        range.insertNode(fragment);
-
-        // Move cursor appropriately - with safety checks
-        if (!selectedText && ((before === '**' && after === '**') || (before === '*' && after === '*'))) {
-          // For bold/italic with no selection, select the placeholder text
-          const firstChild = fragment.firstChild;
-          if (firstChild && firstChild.parentNode) {
-            range.selectNodeContents(firstChild);
-          }
-        } else {
-          // Move cursor to the end of the inserted content
-          const lastChild = fragment.lastChild;
-          if (lastChild && lastChild.parentNode) {
-            try {
-              range.setEndAfter(lastChild);
-              range.collapse(false); // Collapse to end
-            } catch (error) {
-              // Fallback: use setStartAfter if setEndAfter fails
-              try {
-                range.setStartAfter(lastChild);
-                range.collapse(true);
-              } catch (fallbackError) {
-                // Final fallback: place cursor at the end of the editor
-                const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-                if (editor) {
-                  const newRange = document.createRange();
-                  newRange.selectNodeContents(editor);
-                  newRange.collapse(false);
-                  selection.removeAllRanges();
-                  selection.addRange(newRange);
-                  return;
-                }
-              }
-            }
-          }
-        }
-
-        // Ensure range is valid before adding to selection
-        if (range.startContainer && range.endContainer) {
-          selection.removeAllRanges();
-          selection.addRange(range);
-        }
-
-        // Trigger input event to update the editor content with a delay to preserve focus
-        const wysiwygEditor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-        if (wysiwygEditor) {
-          // Use requestAnimationFrame to ensure focus is preserved
-          requestAnimationFrame(() => {
-            const inputEvent = new Event('input', { bubbles: true });
-            wysiwygEditor.dispatchEvent(inputEvent);
-          });
-        }
-      } catch (error) {
-        console.error('Error inserting formatting:', error);
-        // Fallback: try to insert plain text using modern methods
-        const selection = window.getSelection();
-        if (selection && selection.rangeCount > 0) {
-          const range = selection.getRangeAt(0);
-          const textNode = document.createTextNode(formattedHtml.replace(/<[^>]*>/g, ''));
-          try {
-            range.deleteContents();
-            range.insertNode(textNode);
-            range.selectNodeContents(textNode);
-            range.collapse(false);
-            selection.removeAllRanges();
-            selection.addRange(range);
-          } catch (fallbackError) {
-            console.error('Error inserting fallback text:', fallbackError);
-          }
-        }
-      }
-      // Also update the content state and add to history after formatting
-      setTimeout(() => {
-        // Check if component is still mounted
-        if (isUnmounted) return;
-
-        const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-        if (editor && !isUnmounted) {
-          try {
-            const rawHtml = editor.innerHTML;
-            const normalizedHtml = normalizeEditorHtml(rawHtml);
-            const newMarkdownContent = htmlToMarkdown(normalizedHtml);
-            const contentChanged = hasContentChanged(newMarkdownContent, normalizedHtml);
-
-            if (!isUnmounted) {
-              if (newMarkdownContent !== editedContent) {
-                setEditedContent(newMarkdownContent);
-                setHasChanges(contentChanged);
-                addToHistory(newMarkdownContent);
-              } else if (contentChanged) {
-                setHasChanges(true);
-              }
-            }
-          } catch (error) {
-            console.warn('Error updating content after formatting:', error);
-          }
-        }
-      }, 50);
-    }, 10); // Small delay to ensure focus is restored
-  }, [isSelectionFormatted, restoreEditorFocus, editedContent, htmlToMarkdown, addToHistory, isUnmounted, normalizeEditorHtml, hasContentChanged]);
-
-  // Check toolbar button states based on current selection
-  const checkToolbarStates = useCallback(() => {
-    const selection = window.getSelection();
-    if (selection && selection.rangeCount > 0) {
-      const range = selection.getRangeAt(0);
-      const isBold = isSelectionFormatted(range, 'STRONG');
-      const isItalic = isSelectionFormatted(range, 'EM');
-
-      // Update toolbar button states
-      const boldBtn = document.querySelector('.toolbar-btn[data-format="bold"]');
-      const italicBtn = document.querySelector('.toolbar-btn[data-format="italic"]');
-
-      if (boldBtn) {
-        if (isBold) {
-          boldBtn.classList.add('active');
-        } else {
-          boldBtn.classList.remove('active');
-        }
-      }
-
-      if (italicBtn) {
-        if (isItalic) {
-          italicBtn.classList.add('active');
-        } else {
-          italicBtn.classList.remove('active');
-        }
-      }
-    }
-  }, [isSelectionFormatted]);
-
-  // Insert transcript reference
-  const insertReference = useCallback(() => {
-    const segmentNumber = prompt('Enter transcript segment number (or range like 2-3):');
-    if (segmentNumber) {
-      insertFormatting(`[[${segmentNumber}]]`, '');
-    }
-  }, [insertFormatting]);
-
-  // Save summary function
-  const saveSummary = useCallback(async () => {
     try {
-      // Convert markdown content back to the original format expected by the backend
-      const baseSummaryData = summary ? JSON.parse(summary) : {};
-      const updatedSummaryData = {
-        ...baseSummaryData,
-        formatted_content: editedContent
-      };
+      const parsed: SummaryData = JSON.parse(rawSummary);
+      let markdown = parsed.formatted_content?.trim() ?? '';
 
-      const requestPayload = {
-        summary: JSON.stringify(updatedSummaryData)
-      };
-
-      await apiClient.post(`/jobs/${jobId}/update_summary`, requestPayload, {
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      if (onSummaryUpdate) {
-        onSummaryUpdate(JSON.stringify(updatedSummaryData));
+      if (!markdown && parsed.structured_data) {
+        markdown = buildMarkdownFromStructuredData(parsed.structured_data);
       }
 
-      setOriginalContent(editedContent);
-      setHasChanges(false);
-      const currentHtmlSource = editorRef.current
-        ? editorRef.current.innerHTML
-        : convertMarkdownToHtml(editedContent);
-      setOriginalHtml(normalizeEditorHtml(currentHtmlSource));
+      if (!markdown) {
+        markdown = rawSummary;
+      }
 
-      // Force re-render after successful save
-      setTimeout(() => {
-        // Check if component is still mounted
-        if (isUnmounted) return;
+      const html = marked.parse(markdown) as string;
 
-        const editor = editorRef.current;
-        if (editor && !isUnmounted) {
-          try {
-            editor.innerHTML = getHtmlContent();
-          } catch (error) {
-            console.warn('Error re-rendering after save:', error);
-          }
-        }
-      }, 100);
-
-      return true;
+      return {
+        base: parsed,
+        markdown,
+        html: html || '<p><br></p>'
+      };
     } catch (error) {
-      console.error('Error saving summary:', error);
-      return false;
+      console.error('Failed to parse summary JSON, using raw text:', error);
+      const fallbackHtml = marked.parse(rawSummary) as string;
+
+      return {
+        base: {
+          formatted_content: rawSummary,
+          structured_data: {}
+        },
+        markdown: rawSummary,
+        html: fallbackHtml || '<p><br></p>'
+      };
     }
-  }, [jobId, summary, editedContent, onSummaryUpdate, getHtmlContent, isUnmounted, normalizeEditorHtml, convertMarkdownToHtml]);
+  }, []);
 
-  
-  // Prevent content from being overwritten by React's reconciliation
   useEffect(() => {
-    if (isUnmounted) return;
+    marked.setOptions({
+      breaks: true,
+      gfm: true
+    });
+  }, []);
 
-    const editor = editorRef.current;
-    if (editor && isInitialized && editedContent && !isEditing && !document.activeElement?.isEqualNode(editor)) {
-      const htmlContent = getHtmlContent();
-      if (editor.innerHTML !== htmlContent) {
-        // Save the current selection if there is one
-        const selection = window.getSelection();
-        const savedRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  const resetSaveStatusLater = useCallback(() => {
+    if (saveStatusTimer.current) {
+      window.clearTimeout(saveStatusTimer.current);
+    }
+    saveStatusTimer.current = window.setTimeout(() => {
+      setSaveStatus('idle');
+      saveStatusTimer.current = null;
+    }, 2000);
+  }, []);
 
-        // Double-check editor still exists before updating
-        if (editorRef.current && !isUnmounted) {
-          editorRef.current.innerHTML = htmlContent;
+  useEffect(() => {
+    return () => {
+      if (saveStatusTimer.current) {
+        window.clearTimeout(saveStatusTimer.current);
+      }
+    };
+  }, []);
 
-          // Restore the selection if we saved it and the editor doesn't have focus
-          if (savedRange && !editor.contains(document.activeElement)) {
-            try {
-              const newRange = document.createRange();
-              newRange.setStart(editor, 0);
-              newRange.collapse(true);
-              selection?.removeAllRanges();
-              selection?.addRange(newRange);
-            } catch (error) {
-              // If we can't restore the range, that's okay - just ensure the editor doesn't lose focus
-            }
-          }
+  const updateToolbarState = useCallback(() => {
+    const quill = quillRef.current;
+    if (!quill) {
+      return;
+    }
+
+    const range = quill.getSelection();
+    if (!range) {
+      setToolbarState({ bold: false, italic: false, header: 0, list: '' });
+      return;
+    }
+
+    const format = quill.getFormat(range.index, range.length);
+    setToolbarState({
+      bold: Boolean(format.bold),
+      italic: Boolean(format.italic),
+      header: (format.header ?? 0) as 0 | 2 | 3,
+      list: (format.list ?? '') as '' | 'ordered' | 'bullet'
+    });
+  }, []);
+
+  const updateMarkdownState = useCallback(() => {
+    const quill = quillRef.current;
+    if (!quill) {
+      return;
+    }
+    const html = quill.root.innerHTML;
+    const markdown = turndown.turndown(html);
+    setCurrentMarkdown(markdown);
+    setHasChanges(markdown.trim() !== initialMarkdown.trim());
+  }, [initialMarkdown, turndown]);
+
+  const applyReferenceDecorations = useCallback(() => {
+    const quill = quillRef.current;
+    if (!quill || internalUpdateRef.current) {
+      return;
+    }
+    const currentHtml = quill.root.innerHTML;
+    const enhanced = enhanceHtml(currentHtml);
+    if (enhanced === currentHtml) {
+      return;
+    }
+
+    internalUpdateRef.current = true;
+    const selection = quill.getSelection();
+    // @ts-ignore quill typings expect object but runtime accepts string
+    const delta = quill.clipboard.convert(enhanced);
+    quill.setContents(delta, 'silent');
+    if (selection) {
+      quill.setSelection(selection.index, selection.length, 'silent');
+    }
+    internalUpdateRef.current = false;
+  }, [enhanceHtml]);
+
+  const loadHtmlIntoEditor = useCallback((html: string) => {
+    const quill = quillRef.current;
+    if (!quill) {
+      return;
+    }
+    const safeHtml = html && html.trim() ? html : '<p><br></p>';
+    internalUpdateRef.current = true;
+    // @ts-ignore quill typings expect object but runtime accepts string
+    const delta = quill.clipboard.convert(safeHtml);
+    quill.setContents(delta, 'silent');
+    quill.history.clear();
+    quill.setSelection(quill.getLength(), 0, 'silent');
+    internalUpdateRef.current = false;
+    applyReferenceDecorations();
+    updateToolbarState();
+    updateMarkdownState();
+  }, [applyReferenceDecorations, updateMarkdownState, updateToolbarState]);
+
+  const initializeQuill = useCallback(() => {
+    const host = editorHostRef.current;
+    if (!host || quillRef.current) {
+      return;
+    }
+
+    const previousToolbar = host.previousElementSibling;
+    if (previousToolbar && previousToolbar.classList.contains('ql-toolbar')) {
+      previousToolbar.remove();
+    }
+    host.innerHTML = '';
+
+    const quill = new Quill(host, {
+      theme: 'snow',
+      modules: {
+        toolbar: false,
+        history: {
+          delay: 500,
+          maxStack: 200,
+          userOnly: true
         }
       }
-    }
-  }, [editedContent, getHtmlContent, isInitialized, isEditing, isUnmounted]);
+    });
 
-  // Add keyboard shortcuts and selection listeners
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Only handle shortcuts when not in input fields (except our editor)
-      const target = event.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+    const handleTextChange = () => {
+      if (internalUpdateRef.current) {
         return;
       }
-
-      // Additional check: don't handle shortcuts if focus is not in our editor
-      const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-      if (!editor || !editor.contains(target)) {
-        return;
-      }
-
-      // Handle Enter key for Word-like behavior
-      if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-        if (event.shiftKey) {
-          // Shift+Enter = line break (like Word)
-          // Let browser handle it naturally - creates <br>
-          setTimeout(() => {
-            if (!isUnmounted && editor && editor.contains(document.activeElement)) {
-              requestAnimationFrame(() => {
-                if (!isUnmounted && editor) {
-                  try {
-                    const inputEvent = new Event('input', { bubbles: true });
-                    editor.dispatchEvent(inputEvent);
-                  } catch (error) {
-                    console.warn('Error handling Shift+Enter:', error);
-                  }
-                }
-              });
-            }
-          }, 0);
-        } else {
-          // Regular Enter = new paragraph (like Word)
-          // Let the browser handle Enter naturally to create proper paragraphs
-          // Don't prevent default - let browser create <p> elements naturally
-
-          // Add a small delay to normalize the DOM structure after browser handles Enter
-          setTimeout(() => {
-            if (!isUnmounted && editor && editor.contains(document.activeElement)) {
-              requestAnimationFrame(() => {
-                if (!isUnmounted && editor) {
-                  try {
-                    // Normalize any empty paragraphs created by the browser
-                    const paragraphs = editor.querySelectorAll('p');
-                    paragraphs.forEach(p => {
-                      if (!p.innerHTML.trim()) {
-                        // Empty paragraph needs a <br> to be visible in contentEditable
-                        p.innerHTML = '<br>';
-                      }
-                    });
-
-                    const inputEvent = new Event('input', { bubbles: true });
-                    editor.dispatchEvent(inputEvent);
-                  } catch (error) {
-                    console.warn('Error normalizing paragraphs after Enter:', error);
-                  }
-                }
-              });
-            }
-          }, 0);
-        }
-      }
-
-      // Ctrl+S or Cmd+S to save
-      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-        event.preventDefault();
-        if (hasChanges) {
-          saveSummary().then((success) => {
-            if (success) {
-              console.log('Summary saved successfully');
-            }
-          });
-        }
-      }
-
-      // Ctrl+B or Cmd+B for bold
-      if ((event.ctrlKey || event.metaKey) && event.key === 'b') {
-        event.preventDefault();
-        try {
-          insertFormatting('**', '**');
-        } catch (error) {
-          console.error('Error applying bold formatting:', error);
-        }
-      }
-
-      // Ctrl+I or Cmd+I for italic
-      if ((event.ctrlKey || event.metaKey) && event.key === 'i') {
-        event.preventDefault();
-        try {
-          insertFormatting('*', '*');
-        } catch (error) {
-          console.error('Error applying italic formatting:', error);
-        }
-      }
-
-      // Ctrl+Z or Cmd+Z for undo
-      if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
-        event.preventDefault();
-        try {
-          undo();
-        } catch (error) {
-          console.error('Error undoing:', error);
-        }
-      }
-
-      // Ctrl+Y or Cmd+Shift+Z for redo
-      if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.key === 'z' && event.shiftKey))) {
-        event.preventDefault();
-        try {
-          redo();
-        } catch (error) {
-          console.error('Error redoing:', error);
-        }
-      }
+      applyReferenceDecorations();
+      updateMarkdownState();
+      updateToolbarState();
     };
 
     const handleSelectionChange = () => {
-      // Only update toolbar states if the selection is within our editor
-      const editor = document.querySelector('.wysiwyg-editor') as HTMLDivElement;
-      const selection = window.getSelection();
-      if (editor && selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0);
-        if (editor.contains(range.commonAncestorContainer)) {
-          checkToolbarStates();
+      updateToolbarState();
+    };
+
+    quill.on('text-change', handleTextChange);
+    quill.on('selection-change', handleSelectionChange);
+
+    const root = quill.root;
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      const refSpan = target.closest('.summary-ref') as HTMLElement | null;
+      if (!refSpan) {
+        return;
+      }
+      const refAttr = refSpan.getAttribute('data-ref');
+      if (!refAttr) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (!onSegmentClick) {
+        return;
+      }
+
+      if (refAttr.includes('-')) {
+        const [start, end] = refAttr.split('-').map(Number).filter(n => !Number.isNaN(n));
+        if (start && end && end >= start) {
+          const range: number[] = [];
+          for (let i = start; i <= end; i += 1) {
+            range.push(i);
+          }
+          onSegmentClick(range);
         }
+        return;
+      }
+
+      const single = parseInt(refAttr, 10);
+      if (!Number.isNaN(single)) {
+        onSegmentClick(single);
       }
     };
 
-    document.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('selectionchange', handleSelectionChange);
+    root.addEventListener('click', handleClick);
+
+    quillRef.current = quill;
+    loadHtmlIntoEditor(pendingHtml);
 
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('selectionchange', handleSelectionChange);
-      setIsUnmounted(true);
+      quill.off('text-change', handleTextChange);
+      quill.off('selection-change', handleSelectionChange);
+      root.removeEventListener('click', handleClick);
+      quillRef.current = null;
+      const toolbarEl = host.previousElementSibling;
+      if (toolbarEl && toolbarEl.classList.contains('ql-toolbar')) {
+        toolbarEl.remove();
+      }
+      host.innerHTML = '';
     };
-  }, [hasChanges, editedContent, originalContent, saveSummary, checkToolbarStates, insertFormatting, undo, redo, isUnmounted]);
+  }, [applyReferenceDecorations, loadHtmlIntoEditor, onSegmentClick, pendingHtml, updateMarkdownState, updateToolbarState]);
 
-  // Cleanup effect to prevent memory leaks
   useEffect(() => {
+    const cleanup = initializeQuill();
     return () => {
-      setIsUnmounted(true);
+      if (cleanup) {
+        cleanup();
+      }
     };
+  }, [initializeQuill]);
+
+  useEffect(() => {
+    const parsed = parseSummary(summary);
+    const enhancedHtml = enhanceHtml(parsed.html);
+    setBaseSummaryData(parsed.base);
+    setInitialMarkdown(parsed.markdown);
+    setCurrentMarkdown(parsed.markdown);
+    setPendingHtml(enhancedHtml);
+    setHasChanges(false);
+    setSaveStatus('idle');
+
+    if (saveStatusTimer.current) {
+      window.clearTimeout(saveStatusTimer.current);
+      saveStatusTimer.current = null;
+    }
+  }, [summary, parseSummary, enhanceHtml]);
+
+  useEffect(() => {
+    loadHtmlIntoEditor(pendingHtml);
+  }, [loadHtmlIntoEditor, pendingHtml]);
+
+  const withEditor = useCallback((action: (quill: Quill) => void) => {
+    const quill = quillRef.current;
+    if (quill) {
+      action(quill);
+    }
   }, []);
 
+  const handleUndo = useCallback(() => {
+    withEditor(quill => {
+      quill.history.undo();
+    });
+  }, [withEditor]);
+
+  const handleRedo = useCallback(() => {
+    withEditor(quill => {
+      quill.history.redo();
+    });
+  }, [withEditor]);
+
+  const toggleFormat = useCallback((format: 'bold' | 'italic') => {
+    withEditor(quill => {
+      const range = quill.getSelection(true);
+      if (!range) {
+        return;
+      }
+      const current = quill.getFormat(range.index, range.length);
+      quill.format(format, !current[format]);
+    });
+  }, [withEditor]);
+
+  const applyHeading = useCallback((level: 2 | 3) => {
+    withEditor(quill => {
+      const range = quill.getSelection(true);
+      if (!range) {
+        return;
+      }
+      const current = quill.getFormat(range.index, range.length);
+      if (current.header === level) {
+        quill.format('header', false);
+      } else {
+        quill.format('header', level);
+      }
+    });
+  }, [withEditor]);
+
+  const toggleList = useCallback((type: 'ordered' | 'bullet') => {
+    withEditor(quill => {
+      const range = quill.getSelection(true);
+      if (!range) {
+        return;
+      }
+      const current = quill.getFormat(range.index, range.length);
+      if (current.list === type) {
+        quill.format('list', false);
+      } else {
+        quill.format('list', type);
+      }
+    });
+  }, [withEditor]);
+
+  const handleInsertReference = useCallback(() => {
+    const userInput = window.prompt('输入要引用的转写段落编号（例如 3 或 5-7）');
+    if (!userInput) {
+      return;
+    }
+    const cleaned = userInput.replace(/[^0-9-]/g, '');
+    if (!cleaned) {
+      return;
+    }
+    const display = `[${cleaned}]`;
+
+    withEditor(quill => {
+      const range = quill.getSelection(true);
+      const insertIndex = range ? range.index : quill.getLength();
+      if (range && range.length > 0) {
+        quill.deleteText(range.index, range.length, 'silent');
+      }
+      quill.clipboard.dangerouslyPasteHTML(
+        insertIndex,
+        `<span class="summary-ref" data-ref="${cleaned}">${display}</span>`,
+        'user'
+      );
+      quill.setSelection(insertIndex + display.length, 0, 'silent');
+      applyReferenceDecorations();
+      updateMarkdownState();
+    });
+  }, [applyReferenceDecorations, updateMarkdownState, withEditor]);
+
+  const handleSave = useCallback(async () => {
+    if (!hasChanges || saveStatus === 'saving') {
+      return;
+    }
+
+    setSaveStatus('saving');
+
+    try {
+      const base = baseSummaryData ?? { structured_data: {} };
+      const updated: SummaryData = {
+        ...base,
+        formatted_content: currentMarkdown
+      };
+
+      await apiClient.post(
+        `/jobs/${jobId}/update_summary`,
+        { summary: JSON.stringify(updated) },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      if (onSummaryUpdate) {
+        onSummaryUpdate(JSON.stringify(updated));
+      }
+
+      setBaseSummaryData(updated);
+      setInitialMarkdown(currentMarkdown);
+      setHasChanges(false);
+      setSaveStatus('success');
+      resetSaveStatusLater();
+    } catch (error) {
+      console.error('Error saving summary:', error);
+      setSaveStatus('error');
+      resetSaveStatusLater();
+    }
+  }, [
+    baseSummaryData,
+    currentMarkdown,
+    hasChanges,
+    jobId,
+    onSummaryUpdate,
+    resetSaveStatusLater,
+    saveStatus
+  ]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        handleSave();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSave]);
+
+  const statusLabel = useMemo(() => {
+    if (saveStatus === 'saving') {
+      return (
+        <>
+          <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" />
+          保存中...
+        </>
+      );
+    }
+    if (saveStatus === 'success') {
+      return (
+        <>
+          <i className="bi bi-check-circle me-1" />
+          已保存
+        </>
+      );
+    }
+    if (saveStatus === 'error') {
+      return (
+        <>
+          <i className="bi bi-exclamation-triangle me-1" />
+          保存失败
+        </>
+      );
+    }
+    return (
+      <>
+        <i className="bi bi-save me-1" />
+        保存
+      </>
+    );
+  }, [saveStatus]);
+
+  const isSaveDisabled = saveStatus === 'saving' || (!hasChanges && saveStatus !== 'error');
 
   if (!summary) {
     return (
       <div className="alert alert-info">
-        No summary generated yet. Click the Generate Summary button to create one.
+        暂无会议纪要，请点击“Generate Summary”按钮生成最新内容。
       </div>
     );
   }
 
   return (
-    <div className="summary-with-references" style={{height: '100%', display: 'flex', flexDirection: 'column', padding: '0'}}>
-
-      {/* Editor Header with Save Button */}
-      <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light" style={{ minHeight: '48px' }}>
-        <h6 className="mb-0 text-muted d-flex align-items-center" style={{ fontSize: '0.9rem', fontWeight: '500', margin: 0, lineHeight: '1.2' }}>
-          <i className="bi bi-journal-text me-2" style={{ fontSize: '0.8rem' }}></i>Meeting Summary
-        </h6>
-        <div className="d-flex align-items-center gap-2" style={{ minHeight: '32px' }}>
+    <div className="d-flex flex-column h-100">
+      <div className="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+        <div>
+          <h6 className="mb-0 text-muted">
+            <i className="bi bi-journal-text me-2" />
+            Meeting Summary
+          </h6>
           {hasChanges && (
-            <small className="text-warning me-2">
-              <i className="bi bi-exclamation-circle me-1"></i>Unsaved changes
+            <small className="text-warning">
+              <i className="bi bi-exclamation-circle me-1" />
+              存在未保存的修改
             </small>
           )}
-          <button
-            className={`btn btn-sm ${hasChanges ? 'btn-outline-success' : 'btn-outline-secondary'}`}
-            onClick={async (event) => {
-              if (!hasChanges) return;
-
-              const button = event.currentTarget as HTMLButtonElement;
-              const originalText = button.innerHTML;
-              button.innerHTML = '<span className="spinner-border spinner-border-sm me-1"></span>Saving...';
-              button.disabled = true;
-
-              const success = await saveSummary();
-
-              if (success) {
-                button.innerHTML = '<i className="bi bi-check-circle me-1"></i> Saved!';
-                button.classList.remove('btn-outline-success');
-                button.classList.add('btn-success');
-                setTimeout(() => {
-                  if (!isUnmounted && button) {
-                    button.innerHTML = originalText;
-                    button.classList.remove('btn-success');
-                    button.classList.add('btn-outline-success');
-                    button.disabled = false;
-                  }
-                }, 2000);
-              } else {
-                button.innerHTML = '<i className="bi bi-exclamation-triangle me-1"></i> Error';
-                button.classList.remove('btn-outline-success');
-                button.classList.add('btn-danger');
-                setTimeout(() => {
-                  if (!isUnmounted && button) {
-                    button.innerHTML = originalText;
-                    button.classList.remove('btn-danger');
-                    button.classList.add('btn-outline-success');
-                    button.disabled = false;
-                  }
-                }, 2000);
-              }
-            }}
-            disabled={!hasChanges}
-            title="Save summary changes"
-            style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
-          >
-            <i className="bi bi-save me-1"></i> Save
-          </button>
         </div>
+        <button
+          type="button"
+          className={`btn btn-sm ${
+            saveStatus === 'success'
+              ? 'btn-success'
+              : saveStatus === 'error'
+              ? 'btn-danger'
+              : hasChanges
+              ? 'btn-outline-primary'
+              : 'btn-outline-secondary'
+          }`}
+          onClick={handleSave}
+          disabled={isSaveDisabled}
+          title="Ctrl + S"
+        >
+          {statusLabel}
+        </button>
       </div>
 
-      <div className="summary-container" style={{ height: 'calc(75vh - 60px)', overflowY: 'auto' }}>
+      <div className="d-flex align-items-center gap-2 px-3 py-2 border-bottom bg-white flex-wrap">
+        <div className="btn-group btn-group-sm" role="group" aria-label="Undo/Redo">
+          <button type="button" className="btn btn-outline-secondary" onClick={handleUndo}>
+            <i className="bi bi-arrow-counterclockwise" />
+          </button>
+          <button type="button" className="btn btn-outline-secondary" onClick={handleRedo}>
+            <i className="bi bi-arrow-clockwise" />
+          </button>
+        </div>
+        <div className="btn-group btn-group-sm" role="group" aria-label="Text styles">
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.bold ? 'active' : ''}`}
+            onClick={() => toggleFormat('bold')}
+          >
+            <i className="bi bi-type-bold" />
+          </button>
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.italic ? 'active' : ''}`}
+            onClick={() => toggleFormat('italic')}
+          >
+            <i className="bi bi-type-italic" />
+          </button>
+        </div>
+        <div className="btn-group btn-group-sm" role="group" aria-label="Headings">
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.header === 2 ? 'active' : ''}`}
+            onClick={() => applyHeading(2)}
+          >
+            H2
+          </button>
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.header === 3 ? 'active' : ''}`}
+            onClick={() => applyHeading(3)}
+          >
+            H3
+          </button>
+        </div>
+        <div className="btn-group btn-group-sm" role="group" aria-label="Lists">
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.list === 'bullet' ? 'active' : ''}`}
+            onClick={() => toggleList('bullet')}
+          >
+            <i className="bi bi-list-ul" />
+          </button>
+          <button
+            type="button"
+            className={`btn btn-outline-secondary ${toolbarState.list === 'ordered' ? 'active' : ''}`}
+            onClick={() => toggleList('ordered')}
+          >
+            <i className="bi bi-list-ol" />
+          </button>
+        </div>
+        <button type="button" className="btn btn-sm btn-outline-secondary" onClick={handleInsertReference}>
+          <i className="bi bi-link-45deg me-1" />
+          插入引用
+        </button>
+      </div>
+
+      <div className="flex-grow-1 overflow-auto">
         <style>
           {`
-            .wysiwyg-editor {
+            .ql-container.ql-snow {
+              border: none;
+            }
+            .ql-editor {
               min-height: 400px;
+              padding: 24px;
               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
               font-size: 11pt;
-              line-height: 1.5;
-              color: #333;
-              outline: none;
-              border: none;
-              padding: 24px;
-              white-space: pre-wrap;
-              word-wrap: break-word;
-              text-align: left;
-              background: #ffffff;
-              margin: 0;
-            }
-            .wysiwyg-editor:focus {
-              outline: 2px solid #007bff;
-              outline-offset: -2px;
-            }
-            .transcript-ref {
-              color: #007bff;
-              text-decoration: none;
-              background-color: #e7f3ff;
-              padding: 2px 6px;
-              border-radius: 4px;
-              font-weight: 500;
-              cursor: pointer;
-              display: inline-block;
-              transition: all 0.2s ease;
-              margin: 0 2px;
-            }
-            .transcript-ref:hover {
-              background-color: #cce5ff;
-              text-decoration: underline;
-              transform: translateY(-1px);
-              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            }
-            h1, h2, h3, h4, h5, h6 {
-              margin-top: 24pt;
-              margin-bottom: 12pt;
-              color: #2c3e50;
-              font-weight: 600;
-              line-height: 1.2;
-            }
-            h1 {
-              font-size: 18pt;
-              margin-top: 12pt;
-              margin-bottom: 24pt;
-            }
-            h2 {
-              font-size: 16pt;
-              margin-top: 20pt;
-              margin-bottom: 12pt;
-              border-bottom: 1px solid #ccc;
-              padding-bottom: 3pt;
-            }
-            h3 {
-              font-size: 14pt;
-              margin-top: 16pt;
-              margin-bottom: 8pt;
-            }
-            h4 {
-              font-size: 12pt;
-              margin-top: 14pt;
-              margin-bottom: 8pt;
-            }
-            h5 {
-              font-size: 11pt;
-              margin-top: 12pt;
-              margin-bottom: 6pt;
-            }
-            h6 {
-              font-size: 10pt;
-              margin-top: 12pt;
-              margin-bottom: 6pt;
-            }
-            p {
-              margin: 0 0 12pt 0;
-              line-height: 1.5;
-              min-height: 1.5em;
-              text-indent: 0;
-              word-wrap: break-word;
-            }
-            p:empty {
-              min-height: 1.5em;
-              margin-bottom: 12pt;
-            }
-            p:empty:before {
-              content: "";
-              display: inline-block;
-            }
-            br {
-              line-height: 1.5;
-            }
-            /* Word-like spacing */
-            .wysiwyg-editor {
-              letter-spacing: 0.01em;
-            }
-            ul, ol {
-              margin-bottom: 12pt;
-              padding-left: 36pt;
-            }
-            li {
-              margin-bottom: 6pt;
-              line-height: 1.5;
-            }
-            ol li {
-              margin-left: 0;
-              padding-left: 0;
-            }
-            ul li {
-              margin-left: 0;
-              padding-left: 0;
-            }
-            strong {
-              color: #2c3e50;
-              font-weight: 600;
-            }
-            .editor-toolbar {
-              position: sticky;
-              top: 0;
-              z-index: 10;
-              background: #f8f9fa;
-              border-bottom: 1px solid #e9ecef;
-              padding: 8px 16px;
-            }
-            .toolbar-btn {
-              border: 1px solid #dee2e6;
-              background: white;
-              padding: 6px 10px;
-              margin: 0 2px;
-              border-radius: 4px;
-              cursor: pointer;
-              color: #495057;
-              font-size: 0.8rem;
-              transition: none;
-            }
-            .toolbar-btn:hover {
-              background-color: #f1f3f5;
-              border-color: #adb5bd;
+              line-height: 1.6;
               color: #212529;
             }
-            .toolbar-btn:focus {
-              outline: 2px solid #007bff;
-              outline-offset: 2px;
+            .ql-editor p {
+              margin: 0 0 12pt 0;
             }
-            .toolbar-btn.active {
-              background-color: #007bff;
-              border-color: #007bff;
-              color: white;
-              box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+            .ql-editor h2,
+            .ql-editor h3 {
+              margin-top: 24pt;
+              margin-bottom: 12pt;
+              font-weight: 600;
             }
-            .toolbar-shortcut {
-              font-size: 0.65rem;
-              opacity: 0.7;
-              margin-left: 2px;
+            .ql-editor h2 {
+              border-bottom: 1px solid #e9ecef;
+              padding-bottom: 6pt;
             }
-            .toolbar-btn:disabled,
-            .toolbar-btn.disabled {
-              cursor: not-allowed;
-              pointer-events: none;
+            .summary-ref {
+              color: #0d6efd;
+              background-color: #e7f1ff;
+              padding: 2px 6px;
+              border-radius: 4px;
+              cursor: pointer;
+              margin: 0 2px;
+              display: inline-block;
             }
-            .toolbar-btn:disabled:hover,
-            .toolbar-btn.disabled:hover {
-              background-color: white;
-              border-color: #dee2e6;
-              color: #495057;
+            .summary-ref:hover {
+              background-color: #cfe2ff;
             }
           `}
         </style>
-
-        {/* Editor Toolbar */}
-        <div className="editor-toolbar">
-          <div className="d-flex align-items-center gap-2 flex-wrap">
-            <button
-              className={`toolbar-btn ${historyIndex <= 0 ? 'disabled' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                if (historyIndex > 0) {
-                  undo();
-                }
-              }}
-              title="Undo (Ctrl+Z)"
-              disabled={historyIndex <= 0}
-              style={{ opacity: historyIndex <= 0 ? 0.5 : 1 }}
-            >
-              <i className="bi bi-arrow-counterclockwise"></i>
-              <span className="toolbar-shortcut">Ctrl+Z</span>
-            </button>
-            <button
-              className={`toolbar-btn ${historyIndex >= history.length - 1 ? 'disabled' : ''}`}
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                if (historyIndex < history.length - 1) {
-                  redo();
-                }
-              }}
-              title="Redo (Ctrl+Y)"
-              disabled={historyIndex >= history.length - 1}
-              style={{ opacity: historyIndex >= history.length - 1 ? 0.5 : 1 }}
-            >
-              <i className="bi bi-arrow-clockwise"></i>
-              <span className="toolbar-shortcut">Ctrl+Y</span>
-            </button>
-            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button
-              className="toolbar-btn"
-              data-format="bold"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('**', '**');
-              }}
-              title="Bold (Ctrl+B)"
-            >
-              <i className="bi bi-type-bold"></i>
-              <span className="toolbar-shortcut">Ctrl+B</span>
-            </button>
-            <button
-              className="toolbar-btn"
-              data-format="italic"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('*', '*');
-              }}
-              title="Italic (Ctrl+I)"
-            >
-              <i className="bi bi-type-italic"></i>
-              <span className="toolbar-shortcut">Ctrl+I</span>
-            </button>
-            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('## ', '');
-              }}
-              title="Heading 2"
-            >
-              H2
-            </button>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('### ', '');
-              }}
-              title="Heading 3"
-            >
-              H3
-            </button>
-            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('- ', '');
-              }}
-              title="Bullet List"
-            >
-              <i className="bi bi-list-ul"></i>
-            </button>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('1. ', '');
-              }}
-              title="Numbered List"
-            >
-              <i className="bi bi-list-ol"></i>
-            </button>
-            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertFormatting('\n\n', ''); // Insert paragraph break
-              }}
-              title="Insert Paragraph Break (Enter)"
-            >
-              <i className="bi bi-paragraph"></i> ¶
-            </button>
-            <div className="border-start" style={{height: '16px', margin: '0 6px', borderLeftWidth: '1px'}}></div>
-            <button
-              className="toolbar-btn"
-              onMouseDown={(e) => {
-                e.preventDefault(); // Prevent losing focus
-                insertReference();
-              }}
-              title="Insert Transcript Reference"
-              style={{background: '#6c757d', color: 'white', borderColor: '#6c757d'}}
-            >
-              <i className="bi bi-link-45deg"></i> Ref
-            </button>
-          </div>
-        </div>
-
-        {/* Editor Content */}
-        <div
-          ref={editorRef}
-          className="wysiwyg-editor"
-          contentEditable
-          suppressContentEditableWarning={true}
-          onInput={handleWysiwygInput}
-          onFocus={handleEditorFocus}
-          onBlur={handleEditorBlur}
-          onClick={(e) => {
-            const target = e.target as HTMLElement;
-            if (target.classList.contains('transcript-ref')) {
-              e.preventDefault();
-              const refAttr = target.getAttribute('data-ref') || '0';
-              handleReferenceClick(refAttr);
-            }
-          }}
-        />
+        <div ref={editorHostRef} />
       </div>
-
     </div>
   );
 };

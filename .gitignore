@@ -63,3 +63,5 @@ backend/.env
 backend/test_warnings.py
 test_*
 debug*
+backend.log
+frontend.log
