@@ -86,7 +86,7 @@ export function JobDetailPage() {
         }
     }, [isResizing, handleMouseMove, handleMouseUp]);
 
-    const handleSegmentReference = (segmentIndices: number | number[]) => {
+    const handleSegmentReference = useCallback((segmentIndices: number | number[]) => {
         const indices = Array.isArray(segmentIndices) ? segmentIndices : [segmentIndices];
         console.log('handleSegmentReference called with:', indices); // Debug log
 
@@ -131,7 +131,7 @@ export function JobDetailPage() {
         setTimeout(() => {
             setHighlightedSegments([]);
         }, 5000);
-    };
+    }, []);
 
     useEffect(() => {
         if (jobId) {

@@ -288,6 +288,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   const quillRef = useRef<Quill | null>(null);
   const internalUpdateRef = useRef(false);
   const saveStatusTimer = useRef<number | null>(null);
+  const onSegmentClickRef = useRef(onSegmentClick);
   const [baseSummaryData, setBaseSummaryData] = useState<SummaryData | null>(null);
   const [initialMarkdown, setInitialMarkdown] = useState('');
   const [currentMarkdown, setCurrentMarkdown] = useState('');
@@ -533,7 +534,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       event.preventDefault();
       event.stopPropagation();
 
-      if (!onSegmentClick) {
+      const segmentClick = onSegmentClickRef.current;
+      if (!segmentClick) {
         return;
       }
 
@@ -544,14 +546,14 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
           for (let i = start; i <= end; i += 1) {
             range.push(i);
           }
-          onSegmentClick(range);
+          segmentClick(range);
         }
         return;
       }
 
       const single = parseInt(refAttr, 10);
       if (!Number.isNaN(single)) {
-        onSegmentClick(single);
+        segmentClick(single);
       }
     };
 
@@ -571,7 +573,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       }
       host.innerHTML = '';
     };
-  }, [applyReferenceDecorations, loadHtmlIntoEditor, onSegmentClick, pendingHtml, updateMarkdownState, updateToolbarState]);
+  }, [applyReferenceDecorations, loadHtmlIntoEditor, pendingHtml, updateMarkdownState, updateToolbarState]);
 
   useEffect(() => {
     const cleanup = initializeQuill();
@@ -601,6 +603,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   useEffect(() => {
     loadHtmlIntoEditor(pendingHtml);
   }, [loadHtmlIntoEditor, pendingHtml]);
+
+  useEffect(() => {
+    onSegmentClickRef.current = onSegmentClick;
+  }, [onSegmentClick]);
 
   const withEditor = useCallback((action: (quill: Quill) => void) => {
     const quill = quillRef.current;
