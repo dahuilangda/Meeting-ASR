@@ -262,8 +262,8 @@ export function JobDetailPage() {
                                     <option value="Korean">Korean</option>
                                 </select>
                                 <button
-                                    className="btn btn-outline-primary btn-sm d-inline-flex align-items-center gap-2"
-                                    style={{ minWidth: '160px', padding: '6px 12px', fontSize: '0.85rem' }}
+                                    className="btn btn-outline-primary btn-sm d-inline-flex align-items-center justify-content-center gap-2"
+                                    style={{ minWidth: '160px', padding: '6px 16px', fontSize: '0.85rem' }}
                                     onClick={handleSummarize}
                                     disabled={isSummarizing}
                                 >

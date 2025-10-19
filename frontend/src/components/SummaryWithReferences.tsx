@@ -775,6 +775,16 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     );
   }, [saveStatus]);
 
+  const saveButtonClass = useMemo(() => {
+    if (saveStatus === 'success') {
+      return 'btn-success';
+    }
+    if (saveStatus === 'error') {
+      return 'btn-danger';
+    }
+    return hasChanges ? 'btn-outline-success' : 'btn-outline-secondary';
+  }, [hasChanges, saveStatus]);
+
   const isSaveDisabled = saveStatus === 'saving' || (!hasChanges && saveStatus !== 'error');
 
   if (!summary) {
@@ -802,18 +812,11 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         </div>
         <button
           type="button"
-          className={`btn btn-sm ${
-            saveStatus === 'success'
-              ? 'btn-success'
-              : saveStatus === 'error'
-              ? 'btn-danger'
-              : hasChanges
-              ? 'btn-outline-primary'
-              : 'btn-outline-secondary'
-          }`}
+          className={`btn btn-sm ${saveButtonClass}`}
           onClick={handleSave}
           disabled={isSaveDisabled}
           title="Ctrl + S"
+          style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
         >
           {statusLabel}
         </button>
