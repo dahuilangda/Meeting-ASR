@@ -17,6 +17,7 @@ from pathlib import Path
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
+from urllib.parse import quote
 
 from database import crud, models, schemas
 from database.database import SessionLocal, engine
@@ -110,6 +111,19 @@ app.add_middleware(
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 TRANSCRIPT_STORAGE_DIR = Path("uploads/transcripts")
+
+def build_download_filename(original_filename: Optional[str], default_stem: str, suffix: str) -> str:
+    """Create a human-readable download filename using the original stem when possible."""
+    stem = (Path(original_filename).stem if original_filename else "") or default_stem
+    return f"{stem}{suffix}"
+
+def build_content_disposition(filename: str) -> str:
+    """Generate a Content-Disposition header that gracefully handles unicode filenames."""
+    ascii_filename = re.sub(r'[^A-Za-z0-9._-]', '_', filename) or filename
+    disposition = f'attachment; filename="{ascii_filename}"'
+    if ascii_filename != filename:
+        disposition += f"; filename*=UTF-8''{quote(filename)}"
+    return disposition
 
 def persist_transcript_to_disk(job_id: int, transcript_text: str, segments: List[dict]) -> None:
     """Persist transcript text and structured segments to disk for realtime access."""
@@ -763,6 +777,74 @@ def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_
         filename=os.path.basename(audio_path)
     )
 
+@app.get("/jobs/{job_id}/transcript/download")
+def download_job_transcript(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    hydrate_job_transcript_from_disk(job)
+
+    transcript_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
+    transcript_text: Optional[str] = None
+
+    if transcript_path.exists():
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+    elif job.transcript:
+        transcript_text = job.transcript
+
+    if not transcript_text or not transcript_text.strip():
+        raise HTTPException(status_code=404, detail="Transcript not available")
+
+    filename = build_download_filename(job.filename, f"job-{job.id}", "_transcript.txt")
+    headers = {"Content-Disposition": build_content_disposition(filename)}
+    content = transcript_text if transcript_text.endswith("\n") else f"{transcript_text}\n"
+
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/plain; charset=utf-8",
+        headers=headers
+    )
+
+@app.get("/jobs/{job_id}/summary/download")
+def download_job_summary(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    summary_text = job.summary or ""
+    if not summary_text.strip():
+        raise HTTPException(status_code=404, detail="Summary not available")
+
+    parsed_summary: Optional[dict | str] = None
+    try:
+        parsed_summary = json.loads(summary_text)
+    except json.JSONDecodeError:
+        parsed_summary = None
+
+    if isinstance(parsed_summary, dict):
+        formatted_content = parsed_summary.get("formatted_content")
+        structured_data = parsed_summary.get("structured_data")
+        if isinstance(formatted_content, str) and formatted_content.strip():
+            summary_text = formatted_content
+        elif structured_data:
+            summary_text = format_summary_as_markdown_with_refs(structured_data, [])
+    elif isinstance(parsed_summary, str) and parsed_summary.strip():
+        summary_text = parsed_summary
+
+    if not summary_text.strip():
+        raise HTTPException(status_code=404, detail="Summary not available")
+
+    filename = build_download_filename(job.filename, f"job-{job.id}", "_summary.md")
+    headers = {"Content-Disposition": build_content_disposition(filename)}
+    content = summary_text if summary_text.endswith("\n") else f"{summary_text}\n"
+
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/markdown; charset=utf-8",
+        headers=headers
+    )
+
 # --- Post-processing Endpoints ---
 from pydantic import BaseModel, Field
 from openai import OpenAI
@@ -810,6 +892,23 @@ async def rename_job(job_id: int, request: RenameJobRequest, current_user: schem
         raise HTTPException(status_code=400, detail="Filename is too long")
     if any(ch in new_filename for ch in ("/", "\\")):
         raise HTTPException(status_code=400, detail="Filename cannot contain path separators")
+    if new_filename == job.filename:
+        return job
+
+    uploads_dir = Path("uploads")
+    old_path = uploads_dir / job.filename if job.filename else None
+    new_path = uploads_dir / new_filename
+
+    if old_path and old_path.exists():
+        if new_path.exists():
+            raise HTTPException(status_code=400, detail="A file with this name already exists on the server")
+        try:
+            old_path.rename(new_path)
+        except OSError as exc:
+            logger.error(f"[Job {job_id}] Failed to rename file on disk from {old_path} to {new_path}: {exc}")
+            raise HTTPException(status_code=500, detail="Failed to rename the stored file. Please try again later.")
+    else:
+        logger.warning(f"[Job {job_id}] Original file {old_path} missing during rename; updating database only.")
 
     updated_job = crud.update_job_filename(db, job_id=job_id, owner_id=current_user.id, filename=new_filename)
     if not updated_job:
@@ -1380,18 +1479,8 @@ def format_reference_links(references):
     else:
         groups.append(f"{start}-{prev}")
 
-    # Create clickable links
-    ref_links = []
-    for group in groups:
-        if '-' in group:
-            start, end = map(int, group.split('-'))
-            # For ranges, use the start number
-            ref_links.append(f'<a href="#" class="transcript-ref" data-segment="{start}" data-range="{start}-{end}">[{group}]</a>')
-        else:
-            # Single number
-            ref_links.append(f'<a href="#" class="transcript-ref" data-segment="{group}">[{group}]</a>')
-
-    return " ".join(ref_links)
+    # Emit plain reference markers like [1] or [2-4]; the frontend decorates them dynamically
+    return " ".join(f"[{group}]" for group in groups)
 
 def validate_and_fix_references(summary_data, valid_segments):
     """Validate and fix reference numbers in the summary data."""

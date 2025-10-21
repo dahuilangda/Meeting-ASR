@@ -15,13 +15,17 @@ interface TranscriptEditorProps {
   initialTranscript: string | null;
   onTranscriptUpdate: (updatedTranscript: string) => void;
   highlightedSegments?: number[];
+  onDownloadTranscript?: () => void;
+  canDownloadTranscript?: boolean;
 }
 
 export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   jobId,
   initialTranscript,
   onTranscriptUpdate,
-  highlightedSegments = []
+  highlightedSegments = [],
+  onDownloadTranscript,
+  canDownloadTranscript = false
 }) => {
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -642,6 +646,15 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               <i className="bi bi-exclamation-circle me-1"></i>Unsaved changes
             </small>
           )}
+          <button
+            className="btn btn-sm btn-outline-secondary"
+            onClick={onDownloadTranscript}
+            disabled={!onDownloadTranscript || !canDownloadTranscript}
+            title="Download transcript"
+            style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
+          >
+            <i className="bi bi-download me-1"></i> Download Transcript
+          </button>
           <button
             className="btn btn-sm btn-outline-warning"
             onClick={() => {

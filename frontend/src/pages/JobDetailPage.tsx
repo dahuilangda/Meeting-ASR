@@ -23,6 +23,24 @@ interface TranscriptSegment {
     end_time: number;
 }
 
+const getFilenameFromContentDisposition = (header?: string | null): string | null => {
+    if (!header) {
+        return null;
+    }
+
+    const filenameStarMatch = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+    if (filenameStarMatch) {
+        try {
+            return decodeURIComponent(filenameStarMatch[1]);
+        } catch {
+            return filenameStarMatch[1];
+        }
+    }
+
+    const filenameMatch = header.match(/filename\s*=\s*"?([^";]+)"?/i);
+    return filenameMatch ? filenameMatch[1] : null;
+};
+
 export function JobDetailPage() {
     const { jobId } = useParams<{ jobId: string }>();
     const [job, setJob] = useState<JobDetails | null>(null);
@@ -192,6 +210,43 @@ export function JobDetailPage() {
         }
     };
 
+    const downloadFile = useCallback(
+        async (endpoint: string, fallbackSuffix: string, defaultContentType: string) => {
+            if (!job) {
+                return;
+            }
+
+            try {
+                const response = await apiClient.get<Blob>(endpoint, { responseType: 'blob' });
+                const headers = response.headers as Record<string, string | undefined>;
+                const contentDisposition =
+                    headers['content-disposition'] ?? headers['Content-Disposition'] ?? null;
+                const contentType =
+                    headers['content-type'] ?? headers['Content-Type'] ?? defaultContentType;
+                const blob =
+                    response.data instanceof Blob
+                        ? response.data
+                        : new Blob([response.data], { type: contentType });
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                const baseName = job.filename ? job.filename.replace(/\.[^/.]+$/, '') : `job-${job.id}`;
+                const fallbackName = `${baseName}${fallbackSuffix}`;
+                const filename = getFilenameFromContentDisposition(contentDisposition) || fallbackName;
+
+                link.href = downloadUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(downloadUrl);
+            } catch (err) {
+                console.error(`Failed to download from ${endpoint}`, err);
+                alert('下载失败，请稍后重试。');
+            }
+        },
+        [job]
+    );
+
   
     if (error) {
         return <div className="container mt-5 alert alert-danger">{error}</div>;
@@ -203,9 +258,9 @@ export function JobDetailPage() {
 
     return (
         <div className="container-fluid mt-4 px-4">
-            <div className="d-flex justify-content-between align-items-center mb-4">
+            <div className="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
                 <h2>Job Details</h2>
-                <div className="d-flex gap-2">
+                <div className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
                     <button
                         className="btn btn-primary"
                         onClick={() => setIsAssistantOpen(true)}
@@ -246,7 +301,7 @@ export function JobDetailPage() {
                             </small>
                         </div>
                         <div className="col-auto">
-                            <div className="d-flex gap-2 align-items-center">
+                            <div className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
                                 <select
                                     className="form-select form-select-sm"
                                     value={targetLanguage}
@@ -308,6 +363,14 @@ export function JobDetailPage() {
                                     jobId={job.id}
                                     initialTranscript={job.transcript}
                                     highlightedSegments={highlightedSegments}
+                                    canDownloadTranscript={Boolean(job.transcript)}
+                                    onDownloadTranscript={() =>
+                                        downloadFile(
+                                            `/jobs/${job.id}/transcript/download`,
+                                            '_transcript.txt',
+                                            'text/plain;charset=utf-8'
+                                        )
+                                    }
                                     onTranscriptUpdate={(updatedTranscript) => {
                                         // Update the job state with the new transcript
                                         setJob({...job, transcript: updatedTranscript});
@@ -362,6 +425,14 @@ export function JobDetailPage() {
                                 jobId={job.id}
                                 transcriptSegments={transcriptSegments}
                                 onSegmentClick={handleSegmentReference}
+                                canDownloadSummary={Boolean(job.summary)}
+                                onDownloadSummary={() =>
+                                    downloadFile(
+                                        `/jobs/${job.id}/summary/download`,
+                                        '_summary.md',
+                                        'text/markdown;charset=utf-8'
+                                    )
+                                }
                                 onSummaryUpdate={(updatedSummary) => {
                                     setJob(prev => prev ? { ...prev, summary: updatedSummary } : prev);
                                 }}

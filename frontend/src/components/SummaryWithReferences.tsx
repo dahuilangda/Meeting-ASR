@@ -78,6 +78,8 @@ interface SummaryWithReferencesProps {
   transcriptSegments: TranscriptSegment[];
   onSegmentClick?: (segmentIndex: number | number[]) => void;
   onSummaryUpdate?: (updatedSummary: string) => void;
+  onDownloadSummary?: () => void;
+  canDownloadSummary?: boolean;
 }
 
 type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
@@ -274,7 +276,99 @@ const wrapReferencesWithSpans = (html: string): string => {
     node.parentNode?.replaceChild(fragment, node);
   });
 
+  // Collapse accidental duplicate reference spans produced during round-trips between HTML and markdown.
+  const dedupeReferenceSpans = (root: HTMLElement) => {
+    const spans = Array.from(root.querySelectorAll<HTMLSpanElement>('span.summary-ref'));
+    spans.forEach(span => {
+      const refValue = span.getAttribute('data-ref');
+      if (!refValue) {
+        return;
+      }
+
+      const collectWhitespace = (start: ChildNode | null) => {
+        const whitespace: ChildNode[] = [];
+        let current: ChildNode | null = start;
+        while (current && current.nodeType === Node.TEXT_NODE && /(\s|\u200B|\u200C|\u200D|\uFEFF)+/.test(current.textContent ?? '')) {
+          whitespace.push(current);
+          current = current.nextSibling;
+        }
+        return { whitespace, next: current } as const;
+      };
+
+      let { whitespace, next } = collectWhitespace(span.nextSibling);
+
+      while (next instanceof HTMLElement && next.classList.contains('summary-ref') && next.getAttribute('data-ref') === refValue) {
+        whitespace.forEach(node => node.parentNode?.removeChild(node));
+        next.parentNode?.removeChild(next);
+        ({ whitespace, next } = collectWhitespace(span.nextSibling));
+      }
+    });
+  };
+
+  dedupeReferenceSpans(container);
+
   return container.innerHTML;
+};
+
+const dedupeReferenceRuns = (input: string): string => {
+  const runPattern = /((?:[\s\u00A0\u200B\u200C\u200D\uFEFF]*\[\d+(?:[-,\s]\d+)*\]){2,})/g;
+  return input.replace(runPattern, run => {
+    const tokenPattern = /([\s\u00A0\u200B\u200C\u200D\uFEFF]*)(\[\d+(?:[-,\s]\d+)*\])/g;
+    const seen = new Set<string>();
+    let rewritten = '';
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenPattern.exec(run)) !== null) {
+      const whitespace = match[1] ?? '';
+      const token = match[2];
+      const normalized = token.replace(/\s+/g, '');
+      if (seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      rewritten += `${whitespace}${token}`;
+    }
+
+    return rewritten;
+  });
+};
+
+const dedupeNumericArray = (values?: number[] | null): number[] | undefined => {
+  if (!Array.isArray(values)) {
+    return values ?? undefined;
+  }
+  const seen = new Set<number>();
+  const deduped = values.filter(value => {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+      return false;
+    }
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+    return true;
+  });
+  return deduped;
+};
+
+const dedupeStructuredSummary = (data?: StructuredSummary | null): StructuredSummary | undefined => {
+  if (!data) {
+    return data ?? undefined;
+  }
+
+  const withRefs = <T extends { references?: number[] | null }>(item: T | undefined): T | undefined =>
+    item ? ({ ...item, references: dedupeNumericArray(item.references) } as T) : item;
+
+  return {
+    ...data,
+    overview: withRefs(data.overview),
+    key_discussions: data.key_discussions?.map(entry => withRefs(entry)!),
+    decisions: data.decisions?.map(entry => withRefs(entry)!),
+    action_items: data.action_items?.map(entry => withRefs(entry)!),
+    unresolved_issues: data.unresolved_issues?.map(entry => withRefs(entry)!),
+    data_and_metrics: data.data_and_metrics?.map(entry => withRefs(entry)!),
+    concerns_and_risks: data.concerns_and_risks?.map(entry => withRefs(entry)!)
+  };
 };
 
 export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
@@ -282,7 +376,9 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
   jobId,
   transcriptSegments: _transcriptSegments,
   onSegmentClick,
-  onSummaryUpdate
+  onSummaryUpdate,
+  onDownloadSummary,
+  canDownloadSummary = false
 }) => {
   const editorHostRef = useRef<HTMLDivElement>(null);
   const quillRef = useRef<Quill | null>(null);
@@ -333,11 +429,16 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     if (!value) {
       return '';
     }
-    return value
+    const cleaned = value
       .replace(/\r\n/g, '\n')
       .replace(/\u00a0/g, ' ')
+      .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
+      .replace(/\\\[(\d+(?:[-,\s]\d+)*)\\\]/g, '[$1]') // turndown escapes bare bracketed references; undo so comparisons stay stable
+      .replace(/\[\[(\d+(?:[-,\s]\d+)*)\]\]\(#(?:[^)]*)\)/g, '[$1]') // collapse legacy anchor-style reference links to plain markers
+      .replace(/(\[\d+(?:-\d+)?\])(?:[\s\u200B\u200C\u200D\uFEFF]*\1)+/g, '$1') // deduplicate consecutively repeated references (ignoring zero-width spans)
       .replace(/[ \t]+$/gm, '')
       .trimEnd();
+    return dedupeReferenceRuns(cleaned);
   }, []);
 
   const areMarkdownEqual = useCallback(
@@ -358,6 +459,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
 
     try {
       const parsed: SummaryData = JSON.parse(rawSummary);
+      parsed.structured_data = dedupeStructuredSummary(parsed.structured_data);
       let markdown = parsed.formatted_content?.trim() ?? '';
 
       if (!markdown && parsed.structured_data) {
@@ -605,9 +707,25 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     const parsed = parseSummary(summary);
     const enhancedHtml = enhanceHtml(parsed.html);
     const normalizedMarkdown = normalizeMarkdown(parsed.markdown);
-    setBaseSummaryData(parsed.base);
-    setInitialMarkdown(normalizedMarkdown);
-    setCurrentMarkdown(normalizedMarkdown);
+
+    let canonicalMarkdown = normalizedMarkdown;
+    try {
+      const markdownFromHtml = turndown.turndown(enhancedHtml);
+      const normalizedFromHtml = normalizeMarkdown(markdownFromHtml);
+      if (normalizedFromHtml) {
+        canonicalMarkdown = normalizedFromHtml;
+      }
+    } catch (error) {
+      console.warn('Failed to derive canonical markdown from HTML:', error);
+    }
+
+    const baseWithCanonical = parsed.base
+      ? { ...parsed.base, formatted_content: canonicalMarkdown }
+      : null;
+
+    setBaseSummaryData(baseWithCanonical);
+    setInitialMarkdown(canonicalMarkdown);
+    setCurrentMarkdown(canonicalMarkdown);
     setPendingHtml(enhancedHtml);
     setHasChanges(false);
     setSaveStatus('idle');
@@ -616,7 +734,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       window.clearTimeout(saveStatusTimer.current);
       saveStatusTimer.current = null;
     }
-  }, [summary, parseSummary, enhanceHtml, normalizeMarkdown]);
+  }, [summary, parseSummary, enhanceHtml, normalizeMarkdown, turndown]);
 
   useEffect(() => {
     loadHtmlIntoEditor(pendingHtml);
@@ -720,8 +838,10 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     try {
       const base = baseSummaryData ?? { structured_data: {} };
       const formattedContent = normalizeMarkdown(currentMarkdown);
+      const structuredData = dedupeStructuredSummary(base.structured_data);
       const updated: SummaryData = {
         ...base,
+        structured_data: structuredData,
         formatted_content: formattedContent
       };
 
@@ -735,9 +855,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
         onSummaryUpdate(JSON.stringify(updated));
       }
 
+      const refreshedHtml = enhanceHtml(marked.parse(formattedContent) as string);
+
       setBaseSummaryData(updated);
       setInitialMarkdown(formattedContent);
       setCurrentMarkdown(formattedContent);
+      setPendingHtml(refreshedHtml);
       setHasChanges(false);
       setSaveStatus('success');
       resetSaveStatusLater();
@@ -751,6 +874,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     currentMarkdown,
     hasChanges,
     jobId,
+    enhanceHtml,
     normalizeMarkdown,
     onSummaryUpdate,
     resetSaveStatusLater,
@@ -837,16 +961,29 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
             </small>
           )}
         </div>
-        <button
-          type="button"
-          className={`btn btn-sm ${saveButtonClass}`}
-          onClick={handleSave}
-          disabled={isSaveDisabled}
-          title="Ctrl + S"
-          style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
-        >
-          {statusLabel}
-        </button>
+        <div className="d-flex align-items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-sm btn-outline-secondary"
+            onClick={onDownloadSummary}
+            disabled={!onDownloadSummary || !canDownloadSummary}
+            title="Download summary"
+            style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
+          >
+            <i className="bi bi-download me-1" />
+            Download Summary
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${saveButtonClass}`}
+            onClick={handleSave}
+            disabled={isSaveDisabled}
+            title="Ctrl + S"
+            style={{ height: '32px', fontSize: '0.75rem', padding: '4px 8px' }}
+          >
+            {statusLabel}
+          </button>
+        </div>
       </div>
 
       <div className="d-flex align-items-center gap-2 px-3 py-2 border-bottom bg-white flex-wrap">
