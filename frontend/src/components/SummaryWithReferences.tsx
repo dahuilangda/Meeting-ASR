@@ -311,26 +311,48 @@ const wrapReferencesWithSpans = (html: string): string => {
 };
 
 const dedupeReferenceRuns = (input: string): string => {
-  const runPattern = /((?:[\s\u00A0\u200B\u200C\u200D\uFEFF]*\[\d+(?:[-,\s]\d+)*\]){2,})/g;
+  const tokenBody = '\\d+(?:[-,\\s]\\d+)*';
+  const runPattern = new RegExp(`((?:[\\s\\u00A0\\u200B\\u200C\\u200D\\uFEFF]*\\[${tokenBody}\\])+)`, 'g');
   return input.replace(runPattern, run => {
-    const tokenPattern = /([\s\u00A0\u200B\u200C\u200D\uFEFF]*)(\[\d+(?:[-,\s]\d+)*\])/g;
-    const seen = new Set<string>();
-    let rewritten = '';
-    let match: RegExpExecArray | null;
-
-    while ((match = tokenPattern.exec(run)) !== null) {
-      const whitespace = match[1] ?? '';
-      const token = match[2];
-      const normalized = token.replace(/\s+/g, '');
-      if (seen.has(normalized)) {
-        continue;
-      }
-      seen.add(normalized);
-      rewritten += `${whitespace}${token}`;
+    const tokenRegex = new RegExp(`\\[${tokenBody}\\]`, 'g');
+    const tokens = run.match(tokenRegex);
+    if (!tokens) {
+      return run;
     }
 
-    return rewritten;
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    tokens.forEach(token => {
+      const normalized = token.replace(/\s+/g, '');
+      if (seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      deduped.push(token.replace(/\s+/g, ''));
+    });
+
+    const leading = run.match(/^[\s\u00A0\u200B\u200C\u200D\uFEFF]*/) ?? [''];
+    const trailing = run.match(/[\s\u00A0\u200B\u200C\u200D\uFEFF]*$/) ?? [''];
+    return `${leading[0]}${deduped.join('')}${trailing[0]}`;
   });
+};
+
+const dedupeReferencesPerLine = (input: string): string => {
+  return input
+    .split('\n')
+    .map(line => {
+      const seen = new Set<string>();
+      const cleanedLine = line.replace(/\[\d+(?:[-,\s]\d+)*\]/g, token => {
+        const normalized = token.replace(/\s+/g, '');
+        if (seen.has(normalized)) {
+          return '';
+        }
+        seen.add(normalized);
+        return normalized;
+      });
+      return cleanedLine.replace(/\s{2,}/g, ' ').trimEnd();
+    })
+    .join('\n');
 };
 
 const dedupeNumericArray = (values?: number[] | null): number[] | undefined => {
@@ -438,7 +460,8 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       .replace(/(\[\d+(?:-\d+)?\])(?:[\s\u200B\u200C\u200D\uFEFF]*\1)+/g, '$1') // deduplicate consecutively repeated references (ignoring zero-width spans)
       .replace(/[ \t]+$/gm, '')
       .trimEnd();
-    return dedupeReferenceRuns(cleaned);
+    const perLine = dedupeReferencesPerLine(cleaned);
+    return dedupeReferenceRuns(perLine);
   }, []);
 
   const areMarkdownEqual = useCallback(
