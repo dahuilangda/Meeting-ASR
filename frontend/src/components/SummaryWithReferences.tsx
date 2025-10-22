@@ -310,33 +310,6 @@ const wrapReferencesWithSpans = (html: string): string => {
   return container.innerHTML;
 };
 
-const dedupeReferenceRuns = (input: string): string => {
-  const tokenBody = '\\d+(?:[-,\\s]\\d+)*';
-  const runPattern = new RegExp(`((?:[\\s\\u00A0\\u200B\\u200C\\u200D\\uFEFF]*\\[${tokenBody}\\])+)`, 'g');
-  return input.replace(runPattern, run => {
-    const tokenRegex = new RegExp(`\\[${tokenBody}\\]`, 'g');
-    const tokens = run.match(tokenRegex);
-    if (!tokens) {
-      return run;
-    }
-
-    const seen = new Set<string>();
-    const deduped: string[] = [];
-    tokens.forEach(token => {
-      const normalized = token.replace(/\s+/g, '');
-      if (seen.has(normalized)) {
-        return;
-      }
-      seen.add(normalized);
-      deduped.push(token.replace(/\s+/g, ''));
-    });
-
-    const leading = run.match(/^[\s\u00A0\u200B\u200C\u200D\uFEFF]*/) ?? [''];
-    const trailing = run.match(/[\s\u00A0\u200B\u200C\u200D\uFEFF]*$/) ?? [''];
-    return `${leading[0]}${deduped.join('')}${trailing[0]}`;
-  });
-};
-
 const dedupeReferencesPerLine = (input: string): string => {
   return input
     .split('\n')
@@ -460,8 +433,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
       .replace(/(\[\d+(?:-\d+)?\])(?:[\s\u200B\u200C\u200D\uFEFF]*\1)+/g, '$1') // deduplicate consecutively repeated references (ignoring zero-width spans)
       .replace(/[ \t]+$/gm, '')
       .trimEnd();
-    const perLine = dedupeReferencesPerLine(cleaned);
-    return dedupeReferenceRuns(perLine);
+    return dedupeReferencesPerLine(cleaned);
   }, []);
 
   const areMarkdownEqual = useCallback(
