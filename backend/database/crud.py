@@ -36,15 +36,29 @@ def get_user_count(db: Session, include_inactive: bool = False):
         query = query.filter(models.User.is_active == True)
     return query.count()
 
+def _normalize_role(role_value):
+    """Convert incoming role (string or enum) to models.UserRole."""
+    if role_value is None:
+        return models.UserRole.USER
+    if isinstance(role_value, models.UserRole):
+        return role_value
+    try:
+        return models.UserRole(role_value)
+    except ValueError:
+        # Allow passing enum names like "SUPER_ADMIN"
+        return models.UserRole[role_value]
+
+
 def create_user(db: Session, user: schemas.UserCreate):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     hashed_password = get_password_hash(user.password[:72])
+    normalized_role = _normalize_role(user.role)
     db_user = models.User(
         username=user.username,
         email=user.email,
         full_name=user.full_name,
         hashed_password=hashed_password,
-        role=user.role if user.role else models.UserRole.USER
+        role=normalized_role
     )
     db.add(db_user)
     db.commit()
@@ -56,7 +70,10 @@ def update_user(db: Session, user_id: int, user_update: schemas.UserUpdate):
     if db_user:
         update_data = user_update.dict(exclude_unset=True)
         for field, value in update_data.items():
-            setattr(db_user, field, value)
+            if field == "role" and value is not None:
+                setattr(db_user, field, _normalize_role(value))
+            else:
+                setattr(db_user, field, value)
         db.commit()
         db.refresh(db_user)
     return db_user

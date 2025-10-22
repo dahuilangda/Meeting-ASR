@@ -102,9 +102,20 @@ manager = ConnectionManager()
 
 # Add CORS middleware
 from fastapi.middleware.cors import CORSMiddleware
+
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+
+if not allowed_origins:
+    allowed_origins = ["http://localhost:3000"]
+    logger.warning("CORS_ORIGINS not set; defaulting to http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount the uploads directory to serve audio files
