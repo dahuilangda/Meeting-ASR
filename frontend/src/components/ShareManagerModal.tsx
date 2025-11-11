@@ -8,6 +8,7 @@ import {
   createJobShare,
   updateJobShare,
   deactivateJobShare,
+  deleteJobShare,
 } from '../api';
 
 interface ShareManagerModalProps {
@@ -49,6 +50,7 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [actionShareId, setActionShareId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!show) {
@@ -71,7 +73,7 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
       } catch (err) {
         console.error('Failed to fetch share links', err);
         if (!ignore) {
-          setError('无法加载分享列表，请稍后重试。');
+          setError('Failed to load share links. Please try again later.');
         }
       } finally {
         if (!ignore) {
@@ -94,12 +96,12 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
     if (formState.expiresInDays) {
       const days = Number.parseInt(formState.expiresInDays, 10);
       if (Number.isNaN(days) || days <= 0 || days > 365) {
-        return '有效期天数必须是 1 到 365 之间的整数。';
+        return 'Expiration must be an integer between 1 and 365 days.';
       }
     }
 
     if (formState.accessCode && formState.accessCode.trim().length < 4) {
-      return '提取码至少需要 4 个字符。';
+      return 'Access code must contain at least 4 characters.';
     }
 
     return null;
@@ -139,65 +141,127 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
         allowTranscriptDownload: formState.allowTranscriptDownload,
         allowSummaryDownload: formState.allowSummaryDownload,
       });
-      setInfo('分享链接已创建，可复制链接发送给接收方。');
+      setInfo('Share link created. Copy and send it to your recipient.');
     } catch (err) {
       console.error('Failed to create share link', err);
-      setError('创建分享链接失败，请稍后重试。');
+      setError('Failed to create share link. Please try again later.');
     } finally {
       setCreating(false);
     }
   };
 
   const handleTogglePermission = async (share: JobShare, field: keyof UpdateJobSharePayload, nextValue: boolean) => {
+    if (actionShareId !== null) {
+      return;
+    }
+    setInfo(null);
+    setError(null);
     try {
       const updated = await updateJobShare(jobId, share.id, { [field]: nextValue });
       setShares(prev => prev.map(item => (item.id === share.id ? updated : item)));
     } catch (err) {
       console.error('Failed to update share link', err);
-      setError('更新权限失败，请稍后重试。');
+      setError('Failed to update permissions. Please try again later.');
     }
   };
 
   const handleRevokeShare = async (share: JobShare) => {
-    if (!window.confirm('确定要停用这个分享链接吗？')) {
+    if (!window.confirm('Are you sure you want to deactivate this share link?')) {
       return;
     }
+    setInfo(null);
+    setError(null);
+    setActionShareId(share.id);
     try {
       await deactivateJobShare(jobId, share.id);
       setShares(prev => prev.map(item => (item.id === share.id ? { ...item, is_active: false } : item)));
+      setInfo('Share link deactivated.');
     } catch (err) {
       console.error('Failed to deactivate share link', err);
-      setError('停用分享链接失败，请稍后重试。');
+      setError('Failed to deactivate share link. Please try again later.');
+    } finally {
+      setActionShareId(null);
+    }
+  };
+
+  const handleDeleteShare = async (share: JobShare) => {
+    if (!window.confirm('This will permanently delete the share link. Continue?')) {
+      return;
+    }
+    setInfo(null);
+    setError(null);
+    setActionShareId(share.id);
+    try {
+      await deleteJobShare(jobId, share.id);
+      setShares(prev => prev.filter(item => item.id !== share.id));
+      setInfo('Share link deleted.');
+    } catch (err) {
+      console.error('Failed to delete share link', err);
+      setError('Failed to delete share link. Please try again later.');
+    } finally {
+      setActionShareId(null);
     }
   };
 
   const activeShares = useMemo(() => shares.filter(share => share.is_active), [shares]);
 
   const copyToClipboard = async (text: string) => {
+    setInfo(null);
+    setError(null);
     try {
-      await navigator.clipboard.writeText(text);
-      setInfo('链接已复制到剪贴板。');
+      const clipboard = navigator.clipboard;
+      if (clipboard && typeof clipboard.writeText === 'function' && window.isSecureContext) {
+        await clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+
+        const selection = document.getSelection();
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+        textarea.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+
+        if (range && selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+
+        if (!copied) {
+          throw new Error('execCommand returned false');
+        }
+      }
+      setInfo('Link copied to clipboard.');
     } catch (err) {
       console.error('Failed to copy share link', err);
-      setError('复制链接失败，请手动复制。');
+      if (!window.isSecureContext) {
+        setError('Clipboard access requires HTTPS. Please copy the link manually.');
+      } else {
+        setError('Failed to copy the link. Please copy it manually.');
+      }
     }
   };
 
   return (
     <Modal show={show} onHide={handleClose} size="lg" centered>
       <Modal.Header closeButton>
-        <Modal.Title>分享 “{jobFilename}”</Modal.Title>
+        <Modal.Title>Share "{jobFilename}"</Modal.Title>
       </Modal.Header>
       <Modal.Body>
         {error && <div className="alert alert-danger mb-3">{error}</div>}
         {info && <div className="alert alert-success mb-3">{info}</div>}
 
         <Form onSubmit={handleCreateShare} className="border rounded p-3 mb-4">
-          <h6 className="mb-3">创建新的分享链接</h6>
+          <h6 className="mb-3">Create a New Share Link</h6>
           <div className="row g-3">
             <div className="col-md-4">
               <Form.Group controlId="shareExpiresInDays">
-                <Form.Label>有效期（天）</Form.Label>
+                <Form.Label>Expires In (Days)</Form.Label>
                 <Form.Control
                   type="number"
                   min={1}
@@ -206,14 +270,14 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
                   value={formState.expiresInDays}
                   onChange={e => setFormState(prev => ({ ...prev, expiresInDays: e.target.value }))}
                 />
-                <Form.Text className="text-muted">留空则长期有效</Form.Text>
+                <Form.Text className="text-muted">Leave blank for no expiration.</Form.Text>
               </Form.Group>
             </div>
             <div className="col-md-4 d-flex align-items-center">
               <Form.Group controlId="shareAllowAudio" className="mt-3 mt-md-0">
                 <Form.Check
                   type="switch"
-                  label="允许下载音频"
+                  label="Allow audio download"
                   checked={formState.allowAudioDownload}
                   onChange={e => setFormState(prev => ({ ...prev, allowAudioDownload: e.target.checked }))}
                 />
@@ -221,10 +285,10 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
             </div>
             <div className="col-md-4 d-flex align-items-center">
               <Form.Group controlId="shareAccessCode" className="w-100">
-                <Form.Label>提取码（可选）</Form.Label>
+                <Form.Label>Access Code (Optional)</Form.Label>
                 <Form.Control
                   type="text"
-                  placeholder="至少 4 位字符"
+                  placeholder="Minimum 4 characters"
                   value={formState.accessCode}
                   onChange={e => setFormState(prev => ({ ...prev, accessCode: e.target.value }))}
                 />
@@ -236,14 +300,14 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
             <Form.Check
               type="switch"
               id="shareAllowTranscript"
-              label="允许下载转录文本"
+              label="Allow transcript download"
               checked={formState.allowTranscriptDownload}
               onChange={e => setFormState(prev => ({ ...prev, allowTranscriptDownload: e.target.checked }))}
             />
             <Form.Check
               type="switch"
               id="shareAllowSummary"
-              label="允许下载摘要"
+              label="Allow summary download"
               checked={formState.allowSummaryDownload}
               onChange={e => setFormState(prev => ({ ...prev, allowSummaryDownload: e.target.checked }))}
             />
@@ -252,29 +316,29 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
           <div className="mt-3">
             <Button type="submit" disabled={creating}>
               {creating ? <Spinner animation="border" size="sm" className="me-2" /> : <i className="bi bi-share me-2" />}
-              创建分享链接
+              Create Share Link
             </Button>
           </div>
         </Form>
 
-        <h6 className="mb-3">已创建的分享链接</h6>
+        <h6 className="mb-3">Existing Share Links</h6>
         {loading ? (
           <div className="text-center py-4">
             <Spinner animation="border" />
           </div>
         ) : shares.length === 0 ? (
-          <div className="text-muted">暂无分享链接。</div>
+          <div className="text-muted">No share links yet.</div>
         ) : (
           <Table striped bordered hover responsive size="sm">
             <thead>
               <tr>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th>到期时间</th>
-                <th>权限</th>
-                <th>提取码</th>
-                <th>访问记录</th>
-                <th className="text-end">操作</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Expires</th>
+                <th>Permissions</th>
+                <th>Access Code</th>
+                <th>Usage</th>
+                <th className="text-end">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -283,49 +347,49 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
                 return (
                   <tr key={share.id} className={!share.is_active ? 'table-secondary' : undefined}>
                     <td>
-                      {share.is_active ? <Badge bg="success">启用</Badge> : <Badge bg="secondary">已停用</Badge>}
+                      {share.is_active ? <Badge bg="success">Active</Badge> : <Badge bg="secondary">Inactive</Badge>}
                     </td>
                     <td>{formatDateTime(share.created_at)}</td>
                     <td>{formatDateTime(share.expires_at)}</td>
                     <td>
                       <div className="d-flex flex-column gap-2">
-                        <OverlayTrigger placement="top" overlay={<Tooltip>允许下载音频</Tooltip>}>
+                        <OverlayTrigger placement="top" overlay={<Tooltip>Allow audio download</Tooltip>}>
                           <Form.Check
                             type="switch"
                             id={`audio-${share.id}`}
-                            label="音频"
+                            label="Audio"
                             checked={share.allow_audio_download}
-                            disabled={!share.is_active}
+                            disabled={!share.is_active || actionShareId !== null}
                             onChange={e => handleTogglePermission(share, 'allow_audio_download', e.target.checked)}
                           />
                         </OverlayTrigger>
-                        <OverlayTrigger placement="top" overlay={<Tooltip>允许下载转录文本</Tooltip>}>
+                        <OverlayTrigger placement="top" overlay={<Tooltip>Allow transcript download</Tooltip>}>
                           <Form.Check
                             type="switch"
                             id={`transcript-${share.id}`}
-                            label="转录"
+                            label="Transcript"
                             checked={share.allow_transcript_download}
-                            disabled={!share.is_active}
+                            disabled={!share.is_active || actionShareId !== null}
                             onChange={e => handleTogglePermission(share, 'allow_transcript_download', e.target.checked)}
                           />
                         </OverlayTrigger>
-                        <OverlayTrigger placement="top" overlay={<Tooltip>允许下载摘要内容</Tooltip>}>
+                        <OverlayTrigger placement="top" overlay={<Tooltip>Allow summary download</Tooltip>}>
                           <Form.Check
                             type="switch"
                             id={`summary-${share.id}`}
-                            label="摘要"
+                            label="Summary"
                             checked={share.allow_summary_download}
-                            disabled={!share.is_active}
+                            disabled={!share.is_active || actionShareId !== null}
                             onChange={e => handleTogglePermission(share, 'allow_summary_download', e.target.checked)}
                           />
                         </OverlayTrigger>
                       </div>
                     </td>
-                    <td>{share.requires_access_code ? '已设置' : '未设置'}</td>
+                    <td>{share.requires_access_code ? 'Set' : 'Not set'}</td>
                     <td>
                       <div className="d-flex flex-column">
-                        <span>次数：{share.access_count ?? 0}</span>
-                        <span>最后访问：{formatDateTime(share.last_accessed_at)}</span>
+                        <span>Views: {share.access_count ?? 0}</span>
+                        <span>Last visited: {formatDateTime(share.last_accessed_at)}</span>
                       </div>
                     </td>
                     <td className="text-end">
@@ -334,7 +398,7 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
                           variant="outline-primary"
                           size="sm"
                           onClick={() => copyToClipboard(shareUrl)}
-                          title="复制分享链接"
+                          title="Copy share link"
                         >
                           <i className="bi bi-clipboard" />
                         </Button>
@@ -343,8 +407,31 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
                             variant="outline-danger"
                             size="sm"
                             onClick={() => handleRevokeShare(share)}
+                            disabled={actionShareId !== null}
                           >
-                            停用
+                            Deactivate
+                          </Button>
+                        )}
+                        {!share.is_active && (
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => handleDeleteShare(share)}
+                            disabled={actionShareId !== null}
+                            title="Permanently delete this share link"
+                          >
+                            <i className="bi bi-trash" />
+                          </Button>
+                        )}
+                        {share.is_active && (
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => handleDeleteShare(share)}
+                            disabled={actionShareId !== null}
+                            title="Delete immediately without deactivating first"
+                          >
+                            <i className="bi bi-trash" />
                           </Button>
                         )}
                       </div>
@@ -358,13 +445,13 @@ const ShareManagerModal: React.FC<ShareManagerModalProps> = ({ jobId, jobFilenam
 
         {activeShares.length > 0 && (
           <div className="alert alert-info mt-3 mb-0" role="alert">
-            分享链接示例：<span className="fw-bold">{buildShareUrl(activeShares[0].share_token)}</span>
+            Sample share link: <span className="fw-bold">{buildShareUrl(activeShares[0].share_token)}</span>
           </div>
         )}
       </Modal.Body>
       <Modal.Footer>
         <Button variant="secondary" onClick={handleClose}>
-          关闭
+          Close
         </Button>
       </Modal.Footer>
     </Modal>

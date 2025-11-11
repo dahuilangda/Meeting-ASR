@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import threading
 
 from database.database import SessionLocal
 from database.models import Job, JobStatus
@@ -49,6 +50,8 @@ class JobQueueManager:
         self.websocket_connections: Dict[int, List] = {}  # user_id -> list of connections
         self._worker_task: Optional[asyncio.Task] = None
         self._process_handler: Optional[Callable[[int, str, Callable[[], Session]], None]] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self.loop_thread: Optional[threading.Thread] = None
 
         # Rate limiting per user (max 2 concurrent jobs per user)
         if max_jobs_per_user is not None and max_jobs_per_user > 0:
@@ -61,6 +64,8 @@ class JobQueueManager:
         if self.is_running:
             return
 
+        self.loop = asyncio.get_running_loop()
+        self.loop_thread = threading.current_thread()
         self.is_running = True
         self._worker_task = asyncio.create_task(self._worker())
         logger.info("Job queue manager started")
@@ -75,6 +80,8 @@ class JobQueueManager:
             except asyncio.CancelledError:
                 pass
         self.executor.shutdown(wait=True)
+        self.loop = None
+        self.loop_thread = None
         logger.info("Job queue manager stopped")
 
     def set_processing_handler(self, handler: Callable[[int, str, Callable[[], Session]], None]) -> None:
@@ -350,6 +357,65 @@ class JobQueueManager:
     def set_websocket_manager(self, websocket_manager):
         """Set the WebSocket manager for notifications"""
         self.websocket_manager = websocket_manager
+
+    def report_progress(self, job_id: int, progress: float, status: Optional[str] = None, message: Optional[str] = None):
+        """Persist progress updates and emit websocket notification from worker threads."""
+        clamped_progress = max(0.0, min(100.0, progress))
+        job_task = self.active_jobs.get(job_id)
+        user_id: Optional[int] = job_task.user_id if job_task else None
+
+        if job_task:
+            job_task.progress = clamped_progress
+            if status:
+                job_task.status = status
+
+        status_value: Optional[str] = status
+        job_record: Optional[Job] = None
+        try:
+            with SessionLocal() as db:
+                job_record = update_job_progress(db, job_id, clamped_progress)
+                if job_record:
+                    if user_id is None:
+                        user_id = job_record.owner_id
+                    if not status_value:
+                        if isinstance(job_record.status, JobStatus):
+                            status_value = job_record.status.value
+                        else:
+                            status_value = job_record.status or JobStatus.PROCESSING.value
+        except Exception as exc:
+            logger.warning(f"Failed to persist progress for job {job_id}: {exc}")
+            status_value = status_value or JobStatus.PROCESSING.value
+
+        if not status_value:
+            status_value = JobStatus.PROCESSING.value
+
+        if not user_id:
+            return
+
+        if not getattr(self, 'websocket_manager', None):
+            return
+
+        loop = self.loop
+        if not loop or not loop.is_running():
+            return
+
+        payload = {
+            "type": "job_progress",
+            "job_id": job_id,
+            "status": status_value,
+            "progress": clamped_progress,
+        }
+        if message:
+            payload["message"] = message
+
+        # If we're on the event loop thread, schedule directly; otherwise, use thread-safe submission.
+        if self.loop_thread and threading.current_thread() is self.loop_thread:
+            loop.create_task(self._notify_user(user_id, payload))
+        else:
+            try:
+                asyncio.run_coroutine_threadsafe(self._notify_user(user_id, payload), loop)
+            except Exception as exc:
+                logger.warning(f"Failed to submit websocket update for job {job_id}: {exc}")
 
 # Helper to parse integer environment variables safely
 def _get_positive_int_env(name: str, default: int) -> int:

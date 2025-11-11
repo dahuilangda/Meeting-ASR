@@ -400,6 +400,10 @@ export const deactivateJobShare = async (jobId: number, shareId: number): Promis
     await apiClient.delete(`/jobs/${jobId}/shares/${shareId}`);
 };
 
+export const deleteJobShare = async (jobId: number, shareId: number): Promise<void> => {
+    await apiClient.delete(`/jobs/${jobId}/shares/${shareId}`, { params: { permanent: true } });
+};
+
 export const fetchPublicShare = async (
     shareToken: string,
     accessCode?: string

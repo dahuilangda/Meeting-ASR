@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiClient, renameJob } from '../api';
 import { getCurrentUser, User } from '../api/user';
@@ -101,6 +101,7 @@ export function DashboardPage() {
     const [isRenaming, setIsRenaming] = useState(false);
     const [currentUser, setCurrentUser] = useState<User | null>(null);
     const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
+    const [searchTerm, setSearchTerm] = useState('');
     const navigate = useNavigate();
 
     const fetchJobs = () => {
@@ -120,8 +121,7 @@ export function DashboardPage() {
         
         try {
             await apiClient.delete(`/jobs/${jobId}`);
-            // Remove the deleted job from the UI
-            setJobs(jobs.filter(job => job.id !== jobId));
+            setJobs(prev => prev.filter(job => job.id !== jobId));
             setError('');
         } catch (err) {
             setError('Failed to delete the job. Please try again.');
@@ -133,7 +133,7 @@ export function DashboardPage() {
     const handleCancelJob = async (jobId: number) => {
         try {
             await apiClient.post(`/jobs/${jobId}/cancel`);
-            setJobs(jobs.filter(job => job.id !== jobId));
+            setJobs(prev => prev.filter(job => job.id !== jobId));
             setError('');
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Failed to cancel the job. Please try again.');
@@ -263,8 +263,21 @@ export function DashboardPage() {
     };
 
     const handleUploadSuccess = (newJob: Job) => {
-        setJobs([newJob, ...jobs]);
+        setJobs(prev => [newJob, ...prev]);
     };
+
+    const filteredJobs = useMemo(() => {
+        const term = searchTerm.trim().toLowerCase();
+        if (!term) {
+            return jobs;
+        }
+        return jobs.filter(job => {
+            const filenameMatch = job.filename.toLowerCase().includes(term);
+            const statusMatch = job.status.toLowerCase().includes(term);
+            const dateMatch = new Date(job.created_at).toLocaleString().toLowerCase().includes(term);
+            return filenameMatch || statusMatch || dateMatch;
+        });
+    }, [jobs, searchTerm]);
 
     return (
         <>
@@ -372,7 +385,23 @@ export function DashboardPage() {
                 )}
 
                 <div className="card">
-                    <div className="card-header"><h5>My Jobs</h5></div>
+                    <div className="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                        <h5 className="mb-0">My Jobs</h5>
+                        <div className="input-group input-group-sm" style={{ maxWidth: '260px' }}>
+                            <span className="input-group-text" id="jobs-search-addon">
+                                <i className="bi bi-search"></i>
+                            </span>
+                            <input
+                                type="search"
+                                className="form-control"
+                                placeholder="Search jobs..."
+                                aria-label="Search jobs"
+                                aria-describedby="jobs-search-addon"
+                                value={searchTerm}
+                                onChange={event => setSearchTerm(event.target.value)}
+                            />
+                        </div>
+                    </div>
                     <div className="card-body">
                         {error && <div className="alert alert-danger">{error}</div>}
                     <table className="table table-hover">
@@ -385,9 +414,14 @@ export function DashboardPage() {
                             </tr>
                         </thead>
                         <tbody>
-                            {jobs.map(job => (
-                                <tr key={job.id}>
-                                    <td style={{ maxWidth: '260px' }}>
+                            {filteredJobs.length === 0 ? (
+                                <tr>
+                                    <td colSpan={4} className="text-center text-muted py-4">No jobs match your search.</td>
+                                </tr>
+                            ) : (
+                                filteredJobs.map(job => (
+                                    <tr key={job.id}>
+                                        <td style={{ maxWidth: '260px' }}>
                                         {renamingJobId === job.id ? (
                                             <div className="d-flex align-items-center gap-2">
                                                 <input
@@ -441,47 +475,48 @@ export function DashboardPage() {
                                                 </button>
                                             </div>
                                         )}
-                                    </td>
-                                    <td>
-                                        <div className="d-flex align-items-center">
-                                            <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : (job.status === 'processing' ? 'primary' : 'warning'))} me-2`}>
-                                                {job.status === 'queued' ? 'Queued' : job.status === 'processing' ? 'Processing' : job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Failed' : job.status}
-                                            </span>
+                                        </td>
+                                        <td>
+                                            <div className="d-flex align-items-center">
+                                                <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : (job.status === 'processing' ? 'primary' : 'warning'))} me-2`}>
+                                                    {job.status === 'queued' ? 'Queued' : job.status === 'processing' ? 'Processing' : job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Failed' : job.status}
+                                                </span>
+                                                {job.status === 'processing' && job.progress !== undefined && (
+                                                    <small className="text-muted">{Math.round(job.progress)}%</small>
+                                                )}
+                                            </div>
                                             {job.status === 'processing' && job.progress !== undefined && (
-                                                <small className="text-muted">{Math.round(job.progress)}%</small>
+                                                <ProgressBar now={job.progress} className="mt-1" style={{ height: '4px' }} />
                                             )}
-                                        </div>
-                                        {job.status === 'processing' && job.progress !== undefined && (
-                                            <ProgressBar now={job.progress} className="mt-1" style={{ height: '4px' }} />
-                                        )}
-                                        {job.error_message && (
-                                            <small className="text-danger d-block mt-1">{job.error_message}</small>
-                                        )}
-                                    </td>
-                                    <td>{new Date(job.created_at).toLocaleString()}</td>
-                                    <td>
-                                        <Link to={`/jobs/${job.id}`} className={`btn btn-sm btn-info me-2 ${job.status !== 'completed' ? 'disabled' : ''}`}>
-                                            View Result
-                                        </Link>
-                                        {job.status === 'queued' && (
+                                            {job.error_message && (
+                                                <small className="text-danger d-block mt-1">{job.error_message}</small>
+                                            )}
+                                        </td>
+                                        <td>{new Date(job.created_at).toLocaleString()}</td>
+                                        <td>
+                                            <Link to={`/jobs/${job.id}`} className={`btn btn-sm btn-info me-2 ${job.status !== 'completed' ? 'disabled' : ''}`}>
+                                                View Result
+                                            </Link>
+                                            {job.status === 'queued' && (
+                                                <button
+                                                    className="btn btn-sm btn-warning me-2"
+                                                    onClick={() => handleCancelJob(job.id)}
+                                                    disabled={isUploading}
+                                                >
+                                                    Cancel
+                                                </button>
+                                            )}
                                             <button
-                                                className="btn btn-sm btn-warning me-2"
-                                                onClick={() => handleCancelJob(job.id)}
+                                                className="btn btn-sm btn-danger"
+                                                onClick={() => handleDeleteJob(job.id)}
                                                 disabled={isUploading}
                                             >
-                                                Cancel
+                                                Delete
                                             </button>
-                                        )}
-                                        <button
-                                            className="btn btn-sm btn-danger"
-                                            onClick={() => handleDeleteJob(job.id)}
-                                            disabled={isUploading}
-                                        >
-                                            Delete
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
                         </tbody>
                     </table>
                 </div>

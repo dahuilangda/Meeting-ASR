@@ -276,7 +276,7 @@ export function JobDetailPage() {
                         className="btn btn-outline-primary"
                         onClick={() => setIsShareModalOpen(true)}
                     >
-                        <i className="bi bi-share me-1"></i> 分享
+                        <i className="bi bi-share me-1"></i> Share
                     </button>
                     <button
                         className="btn btn-primary"

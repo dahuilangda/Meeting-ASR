@@ -346,6 +346,15 @@ def deactivate_job_share(db: Session, share_id: int) -> bool:
     return True
 
 
+def delete_job_share(db: Session, share_id: int) -> bool:
+    share = db.query(models.JobShare).filter(models.JobShare.id == share_id).first()
+    if not share:
+        return False
+    db.delete(share)
+    db.commit()
+    return True
+
+
 def touch_job_share_access(db: Session, share: models.JobShare) -> None:
     share.last_accessed_at = datetime.datetime.utcnow()
     share.access_count = (share.access_count or 0) + 1

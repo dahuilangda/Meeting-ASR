@@ -325,25 +325,44 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
     db = db_session_class()
     converted_file = None  # Track converted file for cleanup
     
+    def emit_progress(value: float, note: Optional[str] = None, status: Optional[str] = None) -> None:
+        """Report incremental progress without interrupting processing."""
+        try:
+            job_queue_manager.report_progress(
+                job_id,
+                value,
+                status=status or models.JobStatus.PROCESSING.value,
+                message=note
+            )
+        except Exception as progress_error:
+            logger.debug(f"[Job {job_id}] Progress update skipped: {progress_error}")
+
+    success = False
+
     try:
         logger.info(f"[Job {job_id}] Starting transcription & diarization for {filepath}")
+        emit_progress(5.0, "Preparing audio")
         hf_token = os.getenv("HF_TOKEN")
         if not hf_token: raise ValueError("HF_TOKEN not set in .env file")
 
         # Ensure the audio file is in a compatible format
         converted_file = ensure_audio_format(filepath)
         logger.info(f"[Job {job_id}] Using converted file: {converted_file}")
+        emit_progress(10.0, "Audio prepared")
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        
+        emit_progress(12.0, "Loading diarization model")
+
         diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
         diarization_pipeline.to(torch.device(device))
         
         logger.info(f"[Job {job_id}] Using device: {device}")
+        emit_progress(18.0, "Running speaker diarization")
         
         # Run diarization first to identify speakers
         logger.info(f"[Job {job_id}] Running Pyannote diarization...")
         diarization = diarization_pipeline(converted_file)
+        emit_progress(25.0, "Speaker diarization finished")
 
         
         # Get speaker timestamps - using new pyannote API
@@ -365,14 +384,18 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         speaker_df = pd.DataFrame(speaker_segments, columns=['start', 'end', 'speaker'])
         
         logger.info(f"[Job {job_id}] Found {len(speaker_segments)} speaker segments: {set([s[2] for s in speaker_segments])}")
+        emit_progress(30.0, "Speaker segments identified")
         
         # Load the audio file to get its duration for alignment and segment processing
+        emit_progress(32.0, "Loading audio data")
         audio_data, sample_rate = librosa.load(converted_file)
         audio_duration = librosa.get_duration(y=audio_data, sr=sample_rate)
+        emit_progress(35.0, "Audio data ready")
         
         # Initialize the FunASR model once for the entire process
         from funasr import AutoModel
         logger.info(f"[Job {job_id}] Using FunASR for Chinese ASR with punctuation...")
+        emit_progress(38.0, "Loading ASR model")
         
         try:
             asr_model = AutoModel(
@@ -404,6 +427,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         
         # Process each speaker segment individually to ensure alignment
         logger.info(f"[Job {job_id}] Processing {len(speaker_segments)} speaker segments for alignment...")
+        emit_progress(45.0, "Starting transcription")
         
         # Create temporary files for each segment and transcribe individually
         import tempfile
@@ -411,6 +435,10 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         
         result_segments = []
         total_coverage = 0
+        total_segments = max(len(speaker_segments), 1)
+        loop_progress_start = 45.0
+        loop_progress_end = 90.0
+        per_segment_increment = (loop_progress_end - loop_progress_start) / total_segments
         
         for i, (start_time, end_time, speaker_label) in enumerate(speaker_segments):
             segment_duration = end_time - start_time
@@ -530,6 +558,9 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                 # Clean up the temporary file
                 if temp_segment_file and os.path.exists(temp_segment_file):
                     os.remove(temp_segment_file)
+
+            current_progress = loop_progress_start + per_segment_increment * (i + 1)
+            emit_progress(min(current_progress, loop_progress_end), f"Transcribed segment {i+1}/{total_segments}")
         
         # Calculate coverage statistics
         coverage_percentage = (total_coverage / audio_duration) * 100 if audio_duration > 0 else 0
@@ -538,6 +569,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         # If no segments were processed successfully, create a fallback
         if not result_segments:
             logger.warning(f"[Job {job_id}] No valid segments processed, running full audio transcription as fallback...")
+            emit_progress(60.0, "Fallback to full-audio transcription")
             # Fallback to the original approach if no segments were processed
             res = asr_model.generate(
                 input=converted_file,
@@ -597,9 +629,11 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                     'end_time': audio_duration,
                     'word_level_info': []
                 })
+            emit_progress(85.0, "Full-audio transcription complete")
 
         # Format the transcript with speakers and punctuation
         formatted_transcript = "\n".join([f"[{seg['speaker']}] {seg['text']}" for seg in result_segments])
+        emit_progress(92.0, "Formatting transcript")
         
         # Prepare timing information as JSON
         import json
@@ -622,16 +656,21 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         persist_transcript_to_disk(job_id, formatted_transcript, sentences_with_timing)
         logger.info(f"[Job {job_id}] Processing completed with speakers: {set([seg['speaker'] for seg in result_segments])}")
         logger.info(f"[Job {job_id}] Result segments: {len(result_segments)}")
+        emit_progress(97.0, "Transcript saved")
+        success = True
 
     except Exception as e:
         logger.error(f"[Job {job_id}] Processing failed: {e}")
         crud.update_job_status(db, job_id=job_id, status="failed")
+        emit_progress(100.0, "Transcription failed", status=models.JobStatus.FAILED.value)
     finally:
         db.close()
         # NOTE: We're keeping the original file for playback in the UI
         # Clean up converted file if it was created (temporary conversion file)
         if converted_file and os.path.exists(converted_file) and converted_file != filepath: 
             os.remove(converted_file)
+        if success:
+            emit_progress(99.0, "Transcription pipeline finalized")
 
 # Register the audio processing handler with the job queue so queued tasks use FunASR.
 job_queue_manager.set_processing_handler(
@@ -1040,6 +1079,7 @@ def update_job_share(
 def deactivate_job_share_endpoint(
     job_id: int,
     share_id: int,
+    permanent: bool = Query(default=False, description="Delete share instead of deactivating"),
     current_user: schemas.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1051,7 +1091,10 @@ def deactivate_job_share_endpoint(
     if not share or share.job_id != job.id:
         raise HTTPException(status_code=404, detail="Share link not found")
 
-    crud.deactivate_job_share(db, share_id)
+    if permanent:
+        crud.delete_job_share(db, share_id)
+    else:
+        crud.deactivate_job_share(db, share_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
