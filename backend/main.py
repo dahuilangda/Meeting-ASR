@@ -1,8 +1,24 @@
-from fastapi import Depends, FastAPI, HTTPException, status, File, UploadFile, BackgroundTasks, WebSocket, WebSocketDisconnect
+from __future__ import annotations
+from datetime import datetime, timedelta
+
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from contextlib import asynccontextmanager
 from pydantic import ConfigDict
 import shutil
@@ -14,6 +30,7 @@ import logging
 import threading
 import mimetypes
 from pathlib import Path
+import secrets
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
@@ -107,8 +124,8 @@ cors_origins_env = os.getenv("CORS_ORIGINS", "")
 allowed_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 
 if not allowed_origins:
-    allowed_origins = ["http://localhost:3000"]
-    logger.warning("CORS_ORIGINS not set; defaulting to http://localhost:3000")
+    allowed_origins = ["http://localhost:3030"]
+    logger.warning("CORS_ORIGINS not set; defaulting to http://localhost:3030")
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,6 +169,42 @@ def hydrate_job_transcript_from_disk(job: models.Job) -> None:
         job.transcript = text_path.read_text(encoding="utf-8")
     if segments_path.exists():
         job.timing_info = segments_path.read_text(encoding="utf-8")
+
+
+def build_job_share_response(share: models.JobShare) -> schemas.JobShareResponse:
+    return schemas.JobShareResponse(
+        id=share.id,
+        job_id=share.job_id,
+        share_token=share.share_token,
+        created_at=share.created_at,
+        expires_at=share.expires_at,
+        last_accessed_at=share.last_accessed_at,
+        access_count=share.access_count or 0,
+        allow_audio_download=share.allow_audio_download,
+        allow_transcript_download=share.allow_transcript_download,
+        allow_summary_download=share.allow_summary_download,
+        is_active=share.is_active,
+        requires_access_code=bool(share.access_code_hash),
+    )
+
+
+def resolve_share_code(header_code: Optional[str], query_code: Optional[str]) -> Optional[str]:
+    code = (header_code or query_code or "").strip()
+    return code or None
+
+
+def ensure_share_access(share: models.JobShare, provided_code: Optional[str]) -> None:
+    if not share.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share link not found")
+
+    if share.expires_at and share.expires_at <= datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Share link expired")
+
+    if share.access_code_hash:
+        if not provided_code:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Share code required")
+        if not crud.verify_password(provided_code, share.access_code_hash):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid share code")
 
 def get_db():
     db = SessionLocal()
@@ -212,7 +265,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # Update last login time
     crud.update_last_login(db, user.id)
 
-    access_token = security.create_access_token(data={"sub": user.username, "role": user.role.value})
+    access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        data={"sub": user.username, "role": user.role.value},
+        expires_delta=access_token_expires,
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- File Processing Workflow ---
@@ -827,7 +884,7 @@ def download_job_summary(job_id: int, current_user: schemas.User = Depends(get_c
     if not summary_text.strip():
         raise HTTPException(status_code=404, detail="Summary not available")
 
-    parsed_summary: Optional[dict | str] = None
+    parsed_summary: Optional[Union[dict, str]] = None
     try:
         parsed_summary = json.loads(summary_text)
     except json.JSONDecodeError:
@@ -854,6 +911,339 @@ def download_job_summary(job_id: int, current_user: schemas.User = Depends(get_c
         iter([content]),
         media_type="text/markdown; charset=utf-8",
         headers=headers
+    )
+
+
+@app.post("/jobs/{job_id}/shares", response_model=schemas.JobShareResponse)
+def create_job_share(
+    job_id: int,
+    request: schemas.JobShareCreateRequest,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    expires_at: Optional[datetime] = None
+
+    if request.expires_at and request.expires_in_days:
+        raise HTTPException(status_code=400, detail="Specify either expires_at or expires_in_days, not both")
+
+    if request.expires_at:
+        if request.expires_at <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Expiration time must be in the future")
+        expires_at = request.expires_at
+    elif request.expires_in_days is not None:
+        if request.expires_in_days <= 0:
+            raise HTTPException(status_code=400, detail="expires_in_days must be greater than zero")
+        if request.expires_in_days > 365:
+            raise HTTPException(status_code=400, detail="Maximum share duration is 365 days")
+        expires_at = datetime.utcnow() + timedelta(days=request.expires_in_days)
+
+    access_code_hash: Optional[str] = None
+    if request.access_code:
+        access_code = request.access_code.strip()
+        if len(access_code) < 4:
+            raise HTTPException(status_code=400, detail="Access code must be at least 4 characters")
+        access_code_hash = crud.get_password_hash(access_code)
+
+    share_token = secrets.token_urlsafe(16)
+    while crud.get_job_share_by_token(db, share_token):
+        share_token = secrets.token_urlsafe(16)
+
+    share = crud.create_job_share(
+        db,
+        job_id=job.id,
+        creator_id=current_user.id,
+        share_token=share_token,
+        access_code_hash=access_code_hash,
+        expires_at=expires_at,
+        allow_audio_download=request.allow_audio_download,
+        allow_transcript_download=request.allow_transcript_download,
+        allow_summary_download=request.allow_summary_download,
+    )
+
+    return build_job_share_response(share)
+
+
+@app.get("/jobs/{job_id}/shares", response_model=List[schemas.JobShareResponse])
+def list_job_shares(
+    job_id: int,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    shares = crud.get_job_shares_for_owner(db, job_id=job.id, owner_id=current_user.id)
+    return [build_job_share_response(share) for share in shares]
+
+
+@app.patch("/jobs/{job_id}/shares/{share_id}", response_model=schemas.JobShareResponse)
+def update_job_share(
+    job_id: int,
+    share_id: int,
+    request: schemas.JobShareUpdateRequest,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    share = crud.get_job_share_by_id(db, share_id)
+    if not share or share.job_id != job.id:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    payload = request.model_dump(exclude_unset=True)
+    updates: dict[str, object] = {}
+
+    if "allow_audio_download" in payload:
+        updates["allow_audio_download"] = payload["allow_audio_download"]
+    if "allow_transcript_download" in payload:
+        updates["allow_transcript_download"] = payload["allow_transcript_download"]
+    if "allow_summary_download" in payload:
+        updates["allow_summary_download"] = payload["allow_summary_download"]
+    if "is_active" in payload:
+        updates["is_active"] = payload["is_active"]
+    if "expires_at" in payload:
+        expires_at_value = payload["expires_at"]
+        if expires_at_value is not None and expires_at_value <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Expiration time must be in the future")
+        updates["expires_at"] = expires_at_value
+    if "access_code" in payload:
+        access_code_value = payload["access_code"]
+        if access_code_value is None:
+            updates["access_code_hash"] = None
+        else:
+            access_code = access_code_value.strip()
+            if not access_code:
+                updates["access_code_hash"] = None
+            else:
+                if len(access_code) < 4:
+                    raise HTTPException(status_code=400, detail="Access code must be at least 4 characters")
+                updates["access_code_hash"] = crud.get_password_hash(access_code)
+
+    if not updates:
+        return build_job_share_response(share)
+
+    updated_share = crud.update_job_share(db, share_id, **updates)
+    if not updated_share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    return build_job_share_response(updated_share)
+
+
+@app.delete("/jobs/{job_id}/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deactivate_job_share_endpoint(
+    job_id: int,
+    share_id: int,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    share = crud.get_job_share_by_id(db, share_id)
+    if not share or share.job_id != job.id:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    crud.deactivate_job_share(db, share_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/public/shares/{share_token}", response_model=schemas.PublicShareDetails)
+def get_public_share_details(
+    share_token: str,
+    access_code: Optional[str] = Query(default=None, alias="access_code"),
+    x_share_code: Optional[str] = Header(default=None, alias="X-Share-Code"),
+    db: Session = Depends(get_db),
+):
+    share = crud.get_job_share_by_token(db, share_token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    provided_code = resolve_share_code(x_share_code, access_code)
+    ensure_share_access(share, provided_code)
+
+    job = share.job
+    if not job:
+        raise HTTPException(status_code=404, detail="Shared job not found")
+
+    hydrate_job_transcript_from_disk(job)
+    crud.touch_job_share_access(db, share)
+
+    job_status_value = job.status.value if isinstance(job.status, models.JobStatus) else job.status
+
+    return schemas.PublicShareDetails(
+        share_token=share.share_token,
+        expires_at=share.expires_at,
+        requires_access_code=bool(share.access_code_hash),
+        job=schemas.PublicShareJob(
+            id=job.id,
+            filename=job.filename,
+            status=schemas.JobStatusEnum(job_status_value),
+            created_at=job.created_at,
+            transcript=job.transcript,
+            summary=job.summary,
+            timing_info=job.timing_info,
+        ),
+        permissions=schemas.SharePermissions(
+            allow_audio_download=share.allow_audio_download,
+            allow_transcript_download=share.allow_transcript_download,
+            allow_summary_download=share.allow_summary_download,
+        ),
+    )
+
+
+@app.get("/public/shares/{share_token}/transcript/download")
+def download_shared_transcript(
+    share_token: str,
+    access_code: Optional[str] = Query(default=None, alias="access_code"),
+    x_share_code: Optional[str] = Header(default=None, alias="X-Share-Code"),
+    db: Session = Depends(get_db),
+):
+    share = crud.get_job_share_by_token(db, share_token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    provided_code = resolve_share_code(x_share_code, access_code)
+    ensure_share_access(share, provided_code)
+
+    if not share.allow_transcript_download:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Transcript download disabled for this share")
+
+    job = share.job
+    if not job:
+        raise HTTPException(status_code=404, detail="Shared job not found")
+
+    hydrate_job_transcript_from_disk(job)
+
+    transcript_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
+    transcript_text: Optional[str] = None
+
+    if transcript_path.exists():
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+    elif job.transcript:
+        transcript_text = job.transcript
+
+    if not transcript_text or not transcript_text.strip():
+        raise HTTPException(status_code=404, detail="Transcript not available")
+
+    crud.touch_job_share_access(db, share)
+
+    filename = build_download_filename(job.filename, f"job-{job.id}", "_transcript.txt")
+    headers = {"Content-Disposition": build_content_disposition(filename)}
+    content = transcript_text if transcript_text.endswith("\n") else f"{transcript_text}\n"
+
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/plain; charset=utf-8",
+        headers=headers,
+    )
+
+
+@app.get("/public/shares/{share_token}/summary/download")
+def download_shared_summary(
+    share_token: str,
+    access_code: Optional[str] = Query(default=None, alias="access_code"),
+    x_share_code: Optional[str] = Header(default=None, alias="X-Share-Code"),
+    db: Session = Depends(get_db),
+):
+    share = crud.get_job_share_by_token(db, share_token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    provided_code = resolve_share_code(x_share_code, access_code)
+    ensure_share_access(share, provided_code)
+
+    if not share.allow_summary_download:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Summary download disabled for this share")
+
+    job = share.job
+    if not job:
+        raise HTTPException(status_code=404, detail="Shared job not found")
+
+    summary_text = job.summary or ""
+    if not summary_text.strip():
+        raise HTTPException(status_code=404, detail="Summary not available")
+
+    parsed_summary: Optional[Union[dict, str]] = None
+    try:
+        parsed_summary = json.loads(summary_text)
+    except json.JSONDecodeError:
+        parsed_summary = None
+
+    if isinstance(parsed_summary, dict):
+        formatted_content = parsed_summary.get("formatted_content")
+        structured_data = parsed_summary.get("structured_data")
+        if isinstance(formatted_content, str) and formatted_content.strip():
+            summary_text = formatted_content
+        elif structured_data:
+            summary_text = format_summary_as_markdown_with_refs(structured_data, [])
+    elif isinstance(parsed_summary, str) and parsed_summary.strip():
+        summary_text = parsed_summary
+
+    if not summary_text.strip():
+        raise HTTPException(status_code=404, detail="Summary not available")
+
+    crud.touch_job_share_access(db, share)
+
+    filename = build_download_filename(job.filename, f"job-{job.id}", "_summary.md")
+    headers = {"Content-Disposition": build_content_disposition(filename)}
+    content = summary_text if summary_text.endswith("\n") else f"{summary_text}\n"
+
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/markdown; charset=utf-8",
+        headers=headers,
+    )
+
+
+@app.get("/public/shares/{share_token}/audio")
+def download_shared_audio(
+    share_token: str,
+    access_code: Optional[str] = Query(default=None, alias="access_code"),
+    x_share_code: Optional[str] = Header(default=None, alias="X-Share-Code"),
+    db: Session = Depends(get_db),
+):
+    share = crud.get_job_share_by_token(db, share_token)
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+
+    provided_code = resolve_share_code(x_share_code, access_code)
+    ensure_share_access(share, provided_code)
+
+    if not share.allow_audio_download:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Audio download disabled for this share")
+
+    job = share.job
+    if not job:
+        raise HTTPException(status_code=404, detail="Shared job not found")
+
+    audio_path: Optional[str] = None
+    if job.file_path and os.path.exists(job.file_path):
+        audio_path = job.file_path
+    else:
+        upload_dir = "uploads"
+        candidate_path = os.path.join(upload_dir, job.filename)
+        if os.path.exists(candidate_path):
+            audio_path = candidate_path
+
+    if not audio_path:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    crud.touch_job_share_access(db, share)
+
+    media_type, _ = mimetypes.guess_type(audio_path)
+    filename = os.path.basename(audio_path)
+    return FileResponse(
+        audio_path,
+        media_type=media_type or "application/octet-stream",
+        filename=filename,
     )
 
 # --- Post-processing Endpoints ---
@@ -1252,12 +1642,12 @@ class UpdateSummaryRequest(BaseModel):
 class TranscriptSegmentUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: int | None = None
+    id: Optional[int] = None
     text: str
-    speaker: str | None = None
-    start_time: float | None = Field(default=None, alias="startTime")
-    end_time: float | None = Field(default=None, alias="endTime")
-    do_not_merge_with_previous: bool | None = Field(default=None, alias="doNotMergeWithPrevious")
+    speaker: Optional[str] = None
+    start_time: Optional[float] = Field(default=None, alias="startTime")
+    end_time: Optional[float] = Field(default=None, alias="endTime")
+    do_not_merge_with_previous: Optional[bool] = Field(default=None, alias="doNotMergeWithPrevious")
 
 class TranscriptUpdateRequest(BaseModel):
     transcript: List[TranscriptSegmentUpdate]
@@ -1270,7 +1660,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     messages: List[ChatMessage]
-    system_prompt: str | None = Field(default=None, alias="systemPrompt")
+    system_prompt: Optional[str] = Field(default=None, alias="systemPrompt")
 
 @app.post("/jobs/{job_id}/update_summary")
 async def update_summary(job_id: int, request: UpdateSummaryRequest, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1745,16 +2135,23 @@ async def change_password(
 
 # --- Admin User Management ---
 
-@app.get("/admin/users", response_model=List[schemas.UserResponse])
+@app.get("/admin/users", response_model=schemas.UserListResponse)
 async def get_all_users(
     skip: int = 0,
     limit: int = 100,
     include_inactive: bool = False,
+    search: Optional[str] = Query(default=None, max_length=100),
     current_user: schemas.User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
     """Get all users (Admin only)"""
-    users = crud.get_users(db, skip=skip, limit=limit, include_inactive=include_inactive)
+    users, total = crud.get_users(
+        db,
+        skip=skip,
+        limit=limit,
+        include_inactive=include_inactive,
+        search=search,
+    )
     user_responses = []
 
     for user in users:
@@ -1771,7 +2168,7 @@ async def get_all_users(
             job_count=job_count
         ))
 
-    return user_responses
+    return schemas.UserListResponse(items=user_responses, total=total)
 
 @app.get("/admin/users/{user_id}", response_model=schemas.UserResponse)
 async def get_user_by_id(
@@ -1901,7 +2298,7 @@ async def get_admin_stats(
     db: Session = Depends(get_db)
 ):
     """Get system statistics (Admin only)"""
-    total_users = crud.get_user_count(db)
+    total_users = crud.get_user_count(db, include_inactive=True)
     active_users = crud.get_user_count(db, include_inactive=False)
     total_jobs = db.query(models.Job).count()
     completed_jobs = db.query(models.Job).filter(models.Job.status == "completed").count()

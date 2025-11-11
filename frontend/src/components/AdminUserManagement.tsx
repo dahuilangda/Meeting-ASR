@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Alert,
   Button,
@@ -26,6 +26,7 @@ import {
 
 export const AdminUserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
+  const [totalUsers, setTotalUsers] = useState(0);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,47 +57,53 @@ export const AdminUserManagement: React.FC = () => {
     new_password: '',
   });
 
-  useEffect(() => {
-    loadUsers();
-    loadStats();
-  }, [currentPage, includeInactive, searchTerm]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadUsers = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const offset = (currentPage - 1) * pageSize;
-      const userList = await getAllUsers(offset, pageSize, includeInactive);
-
-      // Filter by search term if provided
-      let filteredUsers = userList;
-      if (searchTerm) {
-        filteredUsers = userList.filter(
-          (user) =>
-            user.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (user.email && user.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
-            (user.full_name && user.full_name.toLowerCase().includes(searchTerm.toLowerCase()))
-        );
-      }
-
-      setUsers(filteredUsers);
-      // Note: In a real implementation, you'd get total count from API
-      setTotalPages(Math.ceil(filteredUsers.length / pageSize));
-    } catch (error: any) {
-      setError(error.response?.data?.detail || 'Failed to load users');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
     try {
       const statsData = await getAdminStats();
       setStats(statsData);
     } catch (error: any) {
       console.error('Failed to load stats:', error);
     }
-  };
+  }, []);
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const offset = (currentPage - 1) * pageSize;
+      const searchValue = searchTerm.trim();
+      const { items, total } = await getAllUsers(
+        offset,
+        pageSize,
+        includeInactive,
+        searchValue.length > 0 ? searchValue : undefined
+      );
+
+      setUsers(items);
+      setTotalUsers(total);
+      const computedTotalPages = Math.max(1, Math.ceil(total / pageSize));
+      setTotalPages(computedTotalPages);
+      if (currentPage > computedTotalPages) {
+        setCurrentPage(computedTotalPages);
+      }
+    } catch (error: any) {
+      setError(error.response?.data?.detail || 'Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  }, [currentPage, includeInactive, pageSize, searchTerm]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, includeInactive]);
 
   const handleEditUser = async (user: User) => {
     setSelectedUser(user);
@@ -191,6 +198,50 @@ export const AdminUserManagement: React.FC = () => {
     }
   };
 
+  const renderPaginationItems = () => {
+    if (totalPages <= 1) {
+      return null;
+    }
+
+    const pageSet = new Set<number>();
+    pageSet.add(1);
+    pageSet.add(totalPages);
+    pageSet.add(currentPage);
+
+    if (currentPage - 1 > 1) pageSet.add(currentPage - 1);
+    if (currentPage + 1 < totalPages) pageSet.add(currentPage + 1);
+    if (currentPage - 2 > 1) pageSet.add(currentPage - 2);
+    if (currentPage + 2 < totalPages) pageSet.add(currentPage + 2);
+
+    const sortedPages = Array.from(pageSet).sort((a, b) => a - b);
+    const items: (number | 'ellipsis')[] = [];
+    let previous = 0;
+
+    sortedPages.forEach((page) => {
+      if (previous && page - previous > 1) {
+        items.push('ellipsis');
+      }
+      items.push(page);
+      previous = page;
+    });
+
+    return items.map((item, index) => {
+      if (item === 'ellipsis') {
+        return <Pagination.Ellipsis key={`ellipsis-${index}`} disabled />;
+      }
+
+      return (
+        <Pagination.Item
+          key={item}
+          active={currentPage === item}
+          onClick={() => setCurrentPage(item)}
+        >
+          {item}
+        </Pagination.Item>
+      );
+    });
+  };
+
   return (
     <div className="admin-user-management">
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -271,7 +322,7 @@ export const AdminUserManagement: React.FC = () => {
       {/* Users Table */}
       <Card>
         <Card.Header>
-          <h5 className="mb-0">Users ({users.length})</h5>
+          <h5 className="mb-0">Users ({totalUsers})</h5>
         </Card.Header>
         <Card.Body>
           {loading ? (
@@ -294,50 +345,58 @@ export const AdminUserManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {users.map((user) => (
-                    <tr key={user.id}>
-                      <td>{user.username}</td>
-                      <td>{user.full_name || '-'}</td>
-                      <td>{user.email || '-'}</td>
-                      <td>
-                        <Badge bg={getRoleBadgeVariant(user.role)}>
-                          {user.role.replace('_', ' ').toUpperCase()}
-                        </Badge>
-                      </td>
-                      <td>
-                        <Badge bg={user.is_active ? 'success' : 'danger'}>
-                          {user.is_active ? 'Active' : 'Inactive'}
-                        </Badge>
-                      </td>
-                      <td>{user.job_count}</td>
-                      <td>{new Date(user.created_at).toLocaleDateString()}</td>
-                      <td>
-                        <div className="btn-group btn-group-sm">
-                          <Button
-                            variant="outline-primary"
-                            size="sm"
-                            onClick={() => handleEditUser(user)}
-                          >
-                            <i className="bi bi-pencil"></i>
-                          </Button>
-                          <Button
-                            variant="outline-warning"
-                            size="sm"
-                            onClick={() => handleResetPassword(user)}
-                          >
-                            <i className="bi bi-key"></i>
-                          </Button>
-                          <Button
-                            variant={user.is_active ? 'outline-danger' : 'outline-success'}
-                            size="sm"
-                            onClick={() => handleToggleActive(user)}
-                          >
-                            <i className={`bi bi-${user.is_active ? 'pause' : 'play'}`}></i>
-                          </Button>
-                        </div>
+                  {users.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="text-center text-muted py-4">
+                        No users found.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    users.map((user) => (
+                      <tr key={user.id}>
+                        <td>{user.username}</td>
+                        <td>{user.full_name || '-'}</td>
+                        <td>{user.email || '-'}</td>
+                        <td>
+                          <Badge bg={getRoleBadgeVariant(user.role)}>
+                            {user.role.replace('_', ' ').toUpperCase()}
+                          </Badge>
+                        </td>
+                        <td>
+                          <Badge bg={user.is_active ? 'success' : 'danger'}>
+                            {user.is_active ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </td>
+                        <td>{user.job_count}</td>
+                        <td>{new Date(user.created_at).toLocaleDateString()}</td>
+                        <td>
+                          <div className="btn-group btn-group-sm">
+                            <Button
+                              variant="outline-primary"
+                              size="sm"
+                              onClick={() => handleEditUser(user)}
+                            >
+                              <i className="bi bi-pencil"></i>
+                            </Button>
+                            <Button
+                              variant="outline-warning"
+                              size="sm"
+                              onClick={() => handleResetPassword(user)}
+                            >
+                              <i className="bi bi-key"></i>
+                            </Button>
+                            <Button
+                              variant={user.is_active ? 'outline-danger' : 'outline-success'}
+                              size="sm"
+                              onClick={() => handleToggleActive(user)}
+                            >
+                              <i className={`bi bi-${user.is_active ? 'pause' : 'play'}`}></i>
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </Table>
 
@@ -349,15 +408,7 @@ export const AdminUserManagement: React.FC = () => {
                       disabled={currentPage === 1}
                       onClick={() => setCurrentPage(currentPage - 1)}
                     />
-                    {[...Array(totalPages)].map((_, index) => (
-                      <Pagination.Item
-                        key={index + 1}
-                        active={currentPage === index + 1}
-                        onClick={() => setCurrentPage(index + 1)}
-                      >
-                        {index + 1}
-                      </Pagination.Item>
-                    ))}
+                    {renderPaginationItems()}
                     <Pagination.Next
                       disabled={currentPage === totalPages}
                       onClick={() => setCurrentPage(currentPage + 1)}

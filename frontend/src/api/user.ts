@@ -42,6 +42,11 @@ export interface AdminStats {
   };
 }
 
+export interface UserListResponse {
+  items: User[];
+  total: number;
+}
+
 // User profile APIs
 export const getCurrentUser = async (): Promise<User> => {
   const response = await apiClient.get('/users/me');
@@ -62,12 +67,18 @@ export const changePassword = async (passwordData: PasswordChange): Promise<{ me
 export const getAllUsers = async (
   skip = 0,
   limit = 100,
-  includeInactive = false
-): Promise<User[]> => {
+  includeInactive = false,
+  search?: string
+): Promise<UserListResponse> => {
   const response = await apiClient.get('/admin/users', {
-    params: { skip, limit, include_inactive: includeInactive }
+    params: {
+      skip,
+      limit,
+      include_inactive: includeInactive,
+      search: search && search.trim().length > 0 ? search.trim() : undefined,
+    }
   });
-  return response.data as User[];
+  return response.data as UserListResponse;
 };
 
 export const getUserById = async (userId: number): Promise<User> => {

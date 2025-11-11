@@ -8,6 +8,7 @@ import { UserSettingsPage } from './pages/UserSettingsPage';
 import { AdminPage } from './pages/AdminPage';
 import NetworkStatus from './components/NetworkStatus';
 import { setupGlobalErrorHandlers, logEnvironmentInfo } from './utils/globalErrorHandlers';
+import SharePage from './pages/SharePage';
 
 // A simple component to check for auth token
 function PrivateRoute({ children }: React.PropsWithChildren) {
@@ -39,6 +40,7 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/share/:shareToken" element={<SharePage />} />
           <Route
             path="/"
             element={

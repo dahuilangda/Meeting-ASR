@@ -36,6 +36,11 @@ export const apiClient = axios.create({
     timeout: 30000, // 30 seconds timeout
 });
 
+const publicApiClient = axios.create({
+    baseURL: API_SERVER_URL,
+    timeout: 30000,
+});
+
 // Request interceptor for authentication and logging
 apiClient.interceptors.request.use(config => {
     const token = localStorage.getItem('token');
@@ -313,6 +318,128 @@ export interface JobRenameResponse {
 export const renameJob = async (jobId: number, filename: string): Promise<JobRenameResponse> => {
     const response = await apiClient.put<JobRenameResponse>(`/jobs/${jobId}/rename`, { filename });
     return response.data;
+};
+
+export interface JobShare {
+    id: number;
+    job_id: number;
+    share_token: string;
+    created_at: string;
+    expires_at?: string | null;
+    last_accessed_at?: string | null;
+    access_count: number;
+    allow_audio_download: boolean;
+    allow_transcript_download: boolean;
+    allow_summary_download: boolean;
+    is_active: boolean;
+    requires_access_code: boolean;
+}
+
+export interface CreateJobSharePayload {
+    expires_in_days?: number | null;
+    expires_at?: string | null;
+    access_code?: string | null;
+    allow_audio_download?: boolean;
+    allow_transcript_download?: boolean;
+    allow_summary_download?: boolean;
+}
+
+export interface UpdateJobSharePayload {
+    allow_audio_download?: boolean;
+    allow_transcript_download?: boolean;
+    allow_summary_download?: boolean;
+    expires_at?: string | null;
+    is_active?: boolean;
+    access_code?: string | null;
+}
+
+export interface SharePermissions {
+    allow_audio_download: boolean;
+    allow_transcript_download: boolean;
+    allow_summary_download: boolean;
+}
+
+export interface PublicShareJob {
+    id: number;
+    filename: string;
+    status: string;
+    created_at: string;
+    transcript?: string | null;
+    summary?: string | null;
+    timing_info?: string | null;
+}
+
+export interface PublicShareDetails {
+    share_token: string;
+    expires_at?: string | null;
+    requires_access_code: boolean;
+    job: PublicShareJob;
+    permissions: SharePermissions;
+}
+
+export const listJobShares = async (jobId: number): Promise<JobShare[]> => {
+    const response = await apiClient.get<JobShare[]>(`/jobs/${jobId}/shares`);
+    return response.data;
+};
+
+export const createJobShare = async (jobId: number, payload: CreateJobSharePayload): Promise<JobShare> => {
+    const response = await apiClient.post<JobShare>(`/jobs/${jobId}/shares`, payload);
+    return response.data;
+};
+
+export const updateJobShare = async (
+    jobId: number,
+    shareId: number,
+    payload: UpdateJobSharePayload
+): Promise<JobShare> => {
+    const response = await apiClient.patch<JobShare>(`/jobs/${jobId}/shares/${shareId}`, payload);
+    return response.data;
+};
+
+export const deactivateJobShare = async (jobId: number, shareId: number): Promise<void> => {
+    await apiClient.delete(`/jobs/${jobId}/shares/${shareId}`);
+};
+
+export const fetchPublicShare = async (
+    shareToken: string,
+    accessCode?: string
+): Promise<PublicShareDetails> => {
+    const headers: Record<string, string> = {};
+    const params: Record<string, string> = {};
+    if (accessCode) {
+        headers['X-Share-Code'] = accessCode;
+        params['access_code'] = accessCode;
+    }
+    const response = await publicApiClient.get<PublicShareDetails>(`/public/shares/${shareToken}`, {
+        headers,
+        params,
+    });
+    return response.data;
+};
+
+export const downloadSharedResource = async (
+    shareToken: string,
+    resource: 'audio' | 'transcript' | 'summary',
+    accessCode?: string
+) => {
+    const endpoint =
+        resource === 'audio'
+            ? `/public/shares/${shareToken}/audio`
+            : `/public/shares/${shareToken}/${resource}/download`;
+
+    const headers: Record<string, string> = {};
+    const params: Record<string, string> = {};
+    if (accessCode) {
+        headers['X-Share-Code'] = accessCode;
+        params['access_code'] = accessCode;
+    }
+
+    const response = await publicApiClient.get<Blob>(endpoint, {
+        responseType: 'blob',
+        headers,
+        params,
+    });
+    return response;
 };
 
 // Network error monitoring utilities

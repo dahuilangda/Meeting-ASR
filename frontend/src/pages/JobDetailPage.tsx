@@ -4,6 +4,7 @@ import { apiClient, generateSummary } from '../api';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { SummaryWithReferences } from '../components/SummaryWithReferences';
 import { AssistantChat } from '../components/AssistantChat';
+import ShareManagerModal from '../components/ShareManagerModal';
 
 interface JobDetails {
     id: number;
@@ -49,6 +50,7 @@ export function JobDetailPage() {
     const [isAssistantOpen, setIsAssistantOpen] = useState(false);
     const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
     const [highlightedSegments, setHighlightedSegments] = useState<number[]>([]);
+    const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
     // Resizable panel states
     const [leftPanelWidth, setLeftPanelWidth] = useState(60); // percentage
@@ -247,6 +249,14 @@ export function JobDetailPage() {
         [job]
     );
 
+    const handleAudioDownload = useCallback(() => {
+        if (!job) {
+            return;
+        }
+        const extension = job.filename?.match(/\.[^/.]+$/)?.[0] ?? '';
+        downloadFile(`/jobs/${job.id}/audio`, extension, 'application/octet-stream');
+    }, [downloadFile, job]);
+
   
     if (error) {
         return <div className="container mt-5 alert alert-danger">{error}</div>;
@@ -257,10 +267,17 @@ export function JobDetailPage() {
     }
 
     return (
-        <div className="container-fluid mt-4 px-4">
+        <>
+            <div className="container-fluid mt-4 px-4">
             <div className="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
                 <h2>Job Details</h2>
                 <div className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
+                    <button
+                        className="btn btn-outline-primary"
+                        onClick={() => setIsShareModalOpen(true)}
+                    >
+                        <i className="bi bi-share me-1"></i> 分享
+                    </button>
                     <button
                         className="btn btn-primary"
                         onClick={() => setIsAssistantOpen(true)}
@@ -335,6 +352,12 @@ export function JobDetailPage() {
                                     <span className="text-nowrap">
                                         {isSummarizing ? 'Generating...' : 'Generate Summary'}
                                     </span>
+                                </button>
+                                <button
+                                    className="btn btn-outline-secondary btn-sm"
+                                    onClick={handleAudioDownload}
+                                >
+                                    <i className="bi bi-download me-1"></i> 下载音频
                                 </button>
                             </div>
                         </div>
@@ -441,6 +464,13 @@ export function JobDetailPage() {
                     </div>
                 </div>
             </div>
-        </div>
+            </div>
+            <ShareManagerModal
+                jobId={job.id}
+                jobFilename={job.filename}
+                show={isShareModalOpen}
+                onClose={() => setIsShareModalOpen(false)}
+            />
+        </>
     );
 }

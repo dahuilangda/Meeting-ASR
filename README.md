@@ -113,7 +113,7 @@ npm install
 
 ### 5. 访问应用
 
-- 前端地址：http://localhost:3000
+- 前端地址：http://localhost:3030
 - 后端地址：http://localhost:8000
 - API 文档：http://localhost:8000/docs
 
@@ -176,8 +176,9 @@ yarn install
 
 ```bash
 cd backend
+source venv/bin/activate
 
-# 运行数据库初始化脚本
+# 使用 SQLAlchemy 元数据初始化数据库
 python -c "
 from database.database import engine
 from database import models
@@ -185,6 +186,8 @@ models.Base.metadata.create_all(bind=engine)
 print('数据库初始化完成！')
 "
 ```
+
+> **说明**：默认使用 `sqlite.db`（位于 `backend/`）存储数据，`models.Base.metadata.create_all` 会自动创建所有需要的表。若将来数据库结构有改动，请再次执行上述脚本以确保新表生成。
 
 ### 手动创建超级管理员
 
@@ -226,7 +229,7 @@ HF_ENDPOINT=https://hf-mirror.com
 DATABASE_URL=sqlite:///./sqlite.db
 
 # 生产环境配置
-CORS_ORIGINS=http://localhost:3000,http://your-domain:3000
+CORS_ORIGINS=http://localhost:3030,http://your-domain:3030
 DEBUG=false
 ```
 
@@ -280,7 +283,7 @@ DEBUG=false
 ### 用户注册和登录
 
 1. **注册新账户**
-   - 访问 http://localhost:3000
+   - 访问 http://localhost:3030
    - 点击注册按钮
    - 填写用户名、密码、邮箱（可选）
    - 提交注册
@@ -386,7 +389,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 cd frontend
 npm install
 npm run build
-npm start -p 3000
+PORT=3030 npm start
 ```
 
 ### 生产环境部署
@@ -418,7 +421,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+   - "3030:80"
     depends_on:
       - backend
 ```

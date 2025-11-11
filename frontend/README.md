@@ -73,7 +73,7 @@ The frontend for the Meeting ASR (Automatic Speech Recognition) application. A R
    npm start
    ```
 
-The application will be available at [http://localhost:3000](http://localhost:3000)
+The development server reads the default port from `.env.development` and runs at [http://localhost:3030](http://localhost:3030). Override it by exporting `PORT` before running `npm start`.
 
 ## Available Scripts
 

@@ -42,6 +42,69 @@ class Job(JobBase):
     timing_info: Optional[str] = None
     summary: Optional[str] = None
 
+
+class JobShareCreateRequest(BaseModel):
+    expires_in_days: Optional[int] = None
+    expires_at: Optional[datetime.datetime] = None
+    access_code: Optional[str] = None
+    allow_audio_download: bool = False
+    allow_transcript_download: bool = True
+    allow_summary_download: bool = True
+
+
+class JobShareUpdateRequest(BaseModel):
+    allow_audio_download: Optional[bool] = None
+    allow_transcript_download: Optional[bool] = None
+    allow_summary_download: Optional[bool] = None
+    expires_at: Optional[datetime.datetime] = None
+    is_active: Optional[bool] = None
+    access_code: Optional[str] = None
+
+
+class JobShareResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
+    id: int
+    job_id: int
+    share_token: str
+    created_at: datetime.datetime
+    expires_at: Optional[datetime.datetime] = None
+    last_accessed_at: Optional[datetime.datetime] = None
+    access_count: int = 0
+    allow_audio_download: bool
+    allow_transcript_download: bool
+    allow_summary_download: bool
+    is_active: bool
+    requires_access_code: bool
+
+
+class SharePermissions(BaseModel):
+    allow_audio_download: bool
+    allow_transcript_download: bool
+    allow_summary_download: bool
+
+
+class PublicShareJob(BaseModel):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
+    id: int
+    filename: str
+    status: JobStatusEnum
+    created_at: datetime.datetime
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+    timing_info: Optional[str] = None
+
+
+class PublicShareDetails(BaseModel):
+    model_config = ConfigDict(from_attributes=True, validate_by_name=True)
+
+    share_token: str
+    expires_at: Optional[datetime.datetime] = None
+    requires_access_code: bool
+    job: PublicShareJob
+    permissions: SharePermissions
+
 class JobStatusUpdate(BaseModel):
     job_id: int
     status: JobStatusEnum
@@ -79,6 +142,11 @@ class UserResponse(UserBase):
     created_at: datetime.datetime
     last_login: Optional[datetime.datetime] = None
     job_count: Optional[int] = 0
+
+
+class UserListResponse(BaseModel):
+    items: List[UserResponse]
+    total: int
 
 class User(UserBase):
     model_config = ConfigDict(from_attributes=True, validate_by_name=True)

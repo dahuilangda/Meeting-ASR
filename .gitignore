@@ -65,3 +65,4 @@ test_*
 debug*
 backend.log
 frontend.log
+.claude/settings.local.json
