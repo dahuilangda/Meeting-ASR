@@ -243,7 +243,7 @@ export function JobDetailPage() {
                 window.URL.revokeObjectURL(downloadUrl);
             } catch (err) {
                 console.error(`Failed to download from ${endpoint}`, err);
-                alert('下载失败，请稍后重试。');
+                alert('Download failed, please try again later.');
             }
         },
         [job]
@@ -320,10 +320,11 @@ export function JobDetailPage() {
                         <div className="col-auto">
                             <div className="d-flex flex-wrap gap-2 align-items-center justify-content-end">
                                 <select
-                                    className="form-select form-select-sm"
+                                    className="form-select form-select-sm w-auto"
                                     value={targetLanguage}
                                     onChange={e => setTargetLanguage(e.target.value)}
                                     disabled={isSummarizing}
+                                    style={{ minWidth: '140px' }}
                                 >
                                     <option value="Chinese">Chinese</option>
                                     <option value="English">English</option>
@@ -334,8 +335,8 @@ export function JobDetailPage() {
                                     <option value="Korean">Korean</option>
                                 </select>
                                 <button
-                                    className="btn btn-outline-primary btn-sm d-inline-flex align-items-center justify-content-center gap-2"
-                                    style={{ minWidth: '160px', padding: '6px 16px', fontSize: '0.85rem' }}
+                                    className="btn btn-primary btn-sm d-inline-flex align-items-center gap-2 px-3"
+                                    style={{ minHeight: '34px', fontSize: '0.85rem' }}
                                     onClick={handleSummarize}
                                     disabled={isSummarizing}
                                 >
@@ -354,10 +355,12 @@ export function JobDetailPage() {
                                     </span>
                                 </button>
                                 <button
-                                    className="btn btn-outline-secondary btn-sm"
+                                    className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2 px-3"
+                                    style={{ minHeight: '34px', fontSize: '0.85rem' }}
                                     onClick={handleAudioDownload}
                                 >
-                                    <i className="bi bi-download me-1"></i> 下载音频
+                                    <i className="bi bi-download"></i>
+                                    <span>Download Audio</span>
                                 </button>
                             </div>
                         </div>
