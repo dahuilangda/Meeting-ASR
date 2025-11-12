@@ -73,6 +73,14 @@ models.Base.metadata.create_all(bind=engine)
 async def lifespan(app: FastAPI):
     """Manage application lifecycle events"""
     # Startup
+    db = SessionLocal()
+    try:
+        crud.normalize_job_status_strings(db)
+    except Exception as normalization_error:
+        logger.warning(f"Failed to normalize job status values: {normalization_error}")
+    finally:
+        db.close()
+
     job_queue_manager.set_websocket_manager(manager)
     await job_queue_manager.start()
     logger.info("Meeting ASR Multi-User System started successfully")
@@ -351,6 +359,34 @@ import pandas as pd
 import subprocess
 import tempfile
 import librosa
+import inspect
+import sys
+import huggingface_hub
+from huggingface_hub import file_download as hf_file_download
+
+# Ensure pyannote remains compatible with newer huggingface_hub that expects `token`
+try:
+    if "use_auth_token" not in inspect.signature(hf_file_download.hf_hub_download).parameters:
+        _orig_hf_hub_download = hf_file_download.hf_hub_download
+
+        def _hf_hub_download_compat(*args, use_auth_token=None, token=None, **kwargs):
+            effective_token = token or use_auth_token
+            if effective_token is not None:
+                kwargs.setdefault("token", effective_token)
+            return _orig_hf_hub_download(*args, **kwargs)
+
+        hf_file_download.hf_hub_download = _hf_hub_download_compat
+        huggingface_hub.hf_hub_download = _hf_hub_download_compat
+
+        for module_name, module in list(sys.modules.items()):
+            if not module or not module_name.startswith("pyannote."):
+                continue
+            if hasattr(module, "hf_hub_download"):
+                setattr(module, "hf_hub_download", _hf_hub_download_compat)
+except Exception as compat_error:  # pragma: no cover
+    logging.getLogger(__name__).warning(
+        "Failed to install huggingface_hub compatibility shim: %s", compat_error
+    )
 
 def ensure_audio_format(filepath: str) -> str:
     """
@@ -425,7 +461,10 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         emit_progress(12.0, "Loading diarization model")
 
-        diarization_pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
+        diarization_pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
         diarization_pipeline.to(torch.device(device))
         
         logger.info(f"[Job {job_id}] Using device: {device}")
@@ -733,7 +772,12 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
 
     except Exception as e:
         logger.error(f"[Job {job_id}] Processing failed: {e}")
-        crud.update_job_status(db, job_id=job_id, status="failed")
+        crud.update_job_status(
+            db,
+            job_id=job_id,
+            status=models.JobStatus.FAILED,
+            error_message=str(e),
+        )
         emit_progress(100.0, "Transcription failed", status=models.JobStatus.FAILED.value)
     finally:
         db.close()
@@ -2466,9 +2510,9 @@ async def get_admin_stats(
     total_users = crud.get_user_count(db, include_inactive=True)
     active_users = crud.get_user_count(db, include_inactive=False)
     total_jobs = db.query(models.Job).count()
-    completed_jobs = db.query(models.Job).filter(models.Job.status == "completed").count()
-    processing_jobs = db.query(models.Job).filter(models.Job.status == "processing").count()
-    failed_jobs = db.query(models.Job).filter(models.Job.status == "failed").count()
+    completed_jobs = db.query(models.Job).filter(models.Job.status == models.JobStatus.COMPLETED).count()
+    processing_jobs = db.query(models.Job).filter(models.Job.status == models.JobStatus.PROCESSING).count()
+    failed_jobs = db.query(models.Job).filter(models.Job.status == models.JobStatus.FAILED).count()
 
     return {
         "users": {

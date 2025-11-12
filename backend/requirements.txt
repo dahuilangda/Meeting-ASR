@@ -19,6 +19,7 @@ funasr
 torch
 torchaudio
 pyannote.audio
+huggingface-hub
 librosa
 soundfile
 numpy

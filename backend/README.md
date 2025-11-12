@@ -96,7 +96,62 @@ DATABASE_URL=sqlite:///./sqlite.db
 JOB_QUEUE_MAX_CONCURRENT=3
 JOB_QUEUE_MAX_SIZE=50
 JOB_QUEUE_MAX_PER_USER=2
+# Optional: point the services to pre-downloaded model caches
+# HF_HOME=/abs/path/to/models/huggingface
+# MODELSCOPE_CACHE=/abs/path/to/models/modelscope
 ```
+
+If you mirror models locally, make sure the paths you set in `.env` exist on disk before starting the server.
+
+## Model Downloads
+
+The backend pulls several large models from Hugging Face and ModelScope on first run. To avoid downloading them at runtime or to prepare an offline deployment, you can fetch them manually and point the backend to the local caches.
+
+### Pyannote Speaker Diarization (Hugging Face)
+
+1. Install the Hugging Face CLI (already available if `huggingface-hub` is installed):
+   ```bash
+   pip install --upgrade huggingface-hub
+   ```
+2. Authenticate with a token that has access to `pyannote/speaker-diarization-3.1`:
+   ```bash
+   hf auth login --token "$HF_TOKEN"
+   # Older hubs also accept: huggingface-cli login --token "$HF_TOKEN"
+   ```
+3. Download the model to a local directory (example path shown):
+   ```bash
+   hf download pyannote/speaker-diarization-3.1 \
+     --local-dir ./models/huggingface/pyannote/speaker-diarization-3.1 \
+     --local-dir-use-symlinks False
+   ```
+4. Point the backend to the cache by adding the absolute path to `.env`:
+   ```env
+   HF_HOME=/abs/path/to/models/huggingface
+   ```
+
+### FunASR ASR / VAD / Punctuation (ModelScope)
+
+1. Ensure the ModelScope CLI is available (it is installed alongside `funasr`, but you can upgrade explicitly):
+   ```bash
+   pip install --upgrade modelscope
+   ```
+2. Download the required models to a shared local cache directory:
+   ```bash
+   modelscope download --model iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch \
+     --revision v2.0.4 --local_dir ./models/modelscope/funasr/paraformer-large
+
+   modelscope download --model iic/speech_fsmn_vad_zh-cn-16k-common-pytorch \
+     --revision v2.0.4 --local_dir ./models/modelscope/funasr/fsmn-vad
+
+   modelscope download --model iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch \
+     --revision v2.0.4 --local_dir ./models/modelscope/funasr/ct-punc
+   ```
+3. Expose the cache location to the backend via `.env` so `AutoModel` can reuse it:
+   ```env
+   MODELSCOPE_CACHE=/abs/path/to/models/modelscope
+   ```
+
+With these caches in place, the backend will reuse the local files instead of hitting the remote hubs at startup.
 
 Override the queue settings as needed; restart the backend for changes to take effect.
 

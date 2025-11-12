@@ -1,9 +1,9 @@
 from __future__ import annotations
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 from . import models, schemas
 from passlib.context import CryptContext
-from typing import Optional
+from typing import Optional, Union
 import datetime
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -75,6 +75,29 @@ def _normalize_role(role_value):
         return models.UserRole[role_value]
 
 
+def _normalize_job_status(status_value):
+    """Convert incoming status (string or enum) to models.JobStatus."""
+    if status_value is None:
+        return None
+    if isinstance(status_value, models.JobStatus):
+        return status_value
+    if isinstance(status_value, str):
+        normalized = status_value.strip()
+        if not normalized:
+            return None
+        try:
+            return models.JobStatus(normalized)
+        except ValueError:
+            try:
+                return models.JobStatus(normalized.lower())
+            except ValueError:
+                try:
+                    return models.JobStatus[normalized.upper()]
+                except KeyError as exc:
+                    raise ValueError(f"Unsupported job status value: {status_value!r}") from exc
+    raise ValueError(f"Unsupported job status value: {status_value!r}")
+
+
 def create_user(db: Session, user: schemas.UserCreate):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     hashed_password = get_password_hash(user.password[:72])
@@ -135,6 +158,21 @@ def activate_user(db: Session, user_id: int):
         db.refresh(db_user)
     return db_user
 
+
+def normalize_job_status_strings(db: Session) -> None:
+    """Ensure stored job status values match the canonical enum names."""
+    updates = {status.value: status.name for status in models.JobStatus}
+    total_updates = 0
+    for raw_value, canonical_value in updates.items():
+        result = db.execute(
+            text("UPDATE jobs SET status = :canonical WHERE status = :raw"),
+            {"canonical": canonical_value, "raw": raw_value},
+        )
+        if result.rowcount:
+            total_updates += result.rowcount
+    if total_updates:
+        db.commit()
+
 # --- Job CRUD ---
 
 def create_job(db: Session, filename: str, owner_id: int, file_path: str = None, file_size: int = None) -> models.Job:
@@ -186,10 +224,19 @@ def get_jobs_page_by_owner(
 def get_job(db: Session, job_id: int, owner_id: int) -> Optional[models.Job]:
     return db.query(models.Job).filter(models.Job.id == job_id, models.Job.owner_id == owner_id).first()
 
-def update_job_status(db: Session, job_id: int, status: models.JobStatus, started_at: datetime.datetime = None, completed_at: datetime.datetime = None, error_message: str = None):
+def update_job_status(
+    db: Session,
+    job_id: int,
+    status: Union[models.JobStatus, str, None],
+    started_at: datetime.datetime = None,
+    completed_at: datetime.datetime = None,
+    error_message: str = None,
+):
     db_job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if db_job:
-        db_job.status = status
+        normalized_status = _normalize_job_status(status)
+        if normalized_status is not None:
+            db_job.status = normalized_status
         if started_at:
             db_job.started_at = started_at
         if completed_at:
