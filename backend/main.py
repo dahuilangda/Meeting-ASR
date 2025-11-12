@@ -18,7 +18,7 @@ from fastapi import (
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Any
 from contextlib import asynccontextmanager
 from pydantic import ConfigDict
 import shutil
@@ -178,6 +178,63 @@ def hydrate_job_transcript_from_disk(job: models.Job) -> None:
         job.transcript = text_path.read_text(encoding="utf-8")
     if segments_path.exists():
         job.timing_info = segments_path.read_text(encoding="utf-8")
+
+
+def _load_transcript_text(job: models.Job) -> Optional[str]:
+    """Retrieve transcript text for a job from disk or database."""
+    hydrate_job_transcript_from_disk(job)
+
+    transcript_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
+    transcript_text: Optional[str] = None
+
+    if transcript_path.exists():
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+    elif job.transcript:
+        transcript_text = job.transcript
+
+    if transcript_text and transcript_text.strip():
+        return transcript_text
+    return None
+
+
+def _render_summary_markdown(raw_summary: Optional[str]) -> Optional[str]:
+    """Normalize stored summary content into downloadable markdown text."""
+    if not raw_summary:
+        return None
+
+    raw_summary = raw_summary.strip()
+    if not raw_summary:
+        return None
+
+    try:
+        parsed_summary: Union[dict, str, Any] = json.loads(raw_summary)
+    except json.JSONDecodeError:
+        return raw_summary
+
+    if isinstance(parsed_summary, dict):
+        formatted_content = parsed_summary.get("formatted_content")
+        structured_data = parsed_summary.get("structured_data")
+
+        if isinstance(formatted_content, str) and formatted_content.strip():
+            return formatted_content
+
+        if structured_data:
+            return format_summary_as_markdown_with_refs(structured_data, [])
+
+        return None
+
+    if isinstance(parsed_summary, str):
+        cleaned = parsed_summary.strip()
+        return cleaned or None
+
+    return raw_summary
+
+
+def _build_text_download_response(content: str, filename: str, media_type: str) -> StreamingResponse:
+    """Create a streaming response for textual downloads with consistent headers."""
+    safe_content = content if content.endswith("\n") else f"{content}\n"
+    headers = {"Content-Disposition": build_content_disposition(filename)}
+    return StreamingResponse(iter([safe_content]), media_type=media_type, headers=headers)
 
 
 def build_compressed_audio_path(original_path: str) -> str:
@@ -1055,28 +1112,12 @@ def download_job_transcript(job_id: int, current_user: schemas.User = Depends(ge
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    hydrate_job_transcript_from_disk(job)
-
-    transcript_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
-    transcript_text: Optional[str] = None
-
-    if transcript_path.exists():
-        transcript_text = transcript_path.read_text(encoding="utf-8")
-    elif job.transcript:
-        transcript_text = job.transcript
-
-    if not transcript_text or not transcript_text.strip():
+    transcript_text = _load_transcript_text(job)
+    if not transcript_text:
         raise HTTPException(status_code=404, detail="Transcript not available")
 
     filename = build_download_filename(job.filename, f"job-{job.id}", "_transcript.txt")
-    headers = {"Content-Disposition": build_content_disposition(filename)}
-    content = transcript_text if transcript_text.endswith("\n") else f"{transcript_text}\n"
-
-    return StreamingResponse(
-        iter([content]),
-        media_type="text/plain; charset=utf-8",
-        headers=headers
-    )
+    return _build_text_download_response(transcript_text, filename, "text/plain; charset=utf-8")
 
 @app.get("/jobs/{job_id}/summary/download")
 def download_job_summary(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1084,38 +1125,12 @@ def download_job_summary(job_id: int, current_user: schemas.User = Depends(get_c
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    summary_text = job.summary or ""
-    if not summary_text.strip():
-        raise HTTPException(status_code=404, detail="Summary not available")
-
-    parsed_summary: Optional[Union[dict, str]] = None
-    try:
-        parsed_summary = json.loads(summary_text)
-    except json.JSONDecodeError:
-        parsed_summary = None
-
-    if isinstance(parsed_summary, dict):
-        formatted_content = parsed_summary.get("formatted_content")
-        structured_data = parsed_summary.get("structured_data")
-        if isinstance(formatted_content, str) and formatted_content.strip():
-            summary_text = formatted_content
-        elif structured_data:
-            summary_text = format_summary_as_markdown_with_refs(structured_data, [])
-    elif isinstance(parsed_summary, str) and parsed_summary.strip():
-        summary_text = parsed_summary
-
-    if not summary_text.strip():
+    summary_text = _render_summary_markdown(job.summary)
+    if not summary_text:
         raise HTTPException(status_code=404, detail="Summary not available")
 
     filename = build_download_filename(job.filename, f"job-{job.id}", "_summary.md")
-    headers = {"Content-Disposition": build_content_disposition(filename)}
-    content = summary_text if summary_text.endswith("\n") else f"{summary_text}\n"
-
-    return StreamingResponse(
-        iter([content]),
-        media_type="text/markdown; charset=utf-8",
-        headers=headers
-    )
+    return _build_text_download_response(summary_text, filename, "text/markdown; charset=utf-8")
 
 
 @app.post("/jobs/{job_id}/shares", response_model=schemas.JobShareResponse)
@@ -1328,30 +1343,14 @@ def download_shared_transcript(
     if not job:
         raise HTTPException(status_code=404, detail="Shared job not found")
 
-    hydrate_job_transcript_from_disk(job)
-
-    transcript_path = TRANSCRIPT_STORAGE_DIR / f"job_{job.id}.txt"
-    transcript_text: Optional[str] = None
-
-    if transcript_path.exists():
-        transcript_text = transcript_path.read_text(encoding="utf-8")
-    elif job.transcript:
-        transcript_text = job.transcript
-
-    if not transcript_text or not transcript_text.strip():
+    transcript_text = _load_transcript_text(job)
+    if not transcript_text:
         raise HTTPException(status_code=404, detail="Transcript not available")
 
     crud.touch_job_share_access(db, share)
 
     filename = build_download_filename(job.filename, f"job-{job.id}", "_transcript.txt")
-    headers = {"Content-Disposition": build_content_disposition(filename)}
-    content = transcript_text if transcript_text.endswith("\n") else f"{transcript_text}\n"
-
-    return StreamingResponse(
-        iter([content]),
-        media_type="text/plain; charset=utf-8",
-        headers=headers,
-    )
+    return _build_text_download_response(transcript_text, filename, "text/plain; charset=utf-8")
 
 
 @app.get("/public/shares/{share_token}/summary/download")
@@ -1375,40 +1374,14 @@ def download_shared_summary(
     if not job:
         raise HTTPException(status_code=404, detail="Shared job not found")
 
-    summary_text = job.summary or ""
-    if not summary_text.strip():
-        raise HTTPException(status_code=404, detail="Summary not available")
-
-    parsed_summary: Optional[Union[dict, str]] = None
-    try:
-        parsed_summary = json.loads(summary_text)
-    except json.JSONDecodeError:
-        parsed_summary = None
-
-    if isinstance(parsed_summary, dict):
-        formatted_content = parsed_summary.get("formatted_content")
-        structured_data = parsed_summary.get("structured_data")
-        if isinstance(formatted_content, str) and formatted_content.strip():
-            summary_text = formatted_content
-        elif structured_data:
-            summary_text = format_summary_as_markdown_with_refs(structured_data, [])
-    elif isinstance(parsed_summary, str) and parsed_summary.strip():
-        summary_text = parsed_summary
-
-    if not summary_text.strip():
+    summary_text = _render_summary_markdown(job.summary)
+    if not summary_text:
         raise HTTPException(status_code=404, detail="Summary not available")
 
     crud.touch_job_share_access(db, share)
 
     filename = build_download_filename(job.filename, f"job-{job.id}", "_summary.md")
-    headers = {"Content-Disposition": build_content_disposition(filename)}
-    content = summary_text if summary_text.endswith("\n") else f"{summary_text}\n"
-
-    return StreamingResponse(
-        iter([content]),
-        media_type="text/markdown; charset=utf-8",
-        headers=headers,
-    )
+    return _build_text_download_response(summary_text, filename, "text/markdown; charset=utf-8")
 
 
 @app.get("/public/shares/{share_token}/audio")
@@ -1829,7 +1802,7 @@ Please analyze the transcript and create the structured summary following the sy
                 "structured_data": summary_data
             }
             # Store as JSON string for frontend processing
-            summary_json = json.dumps(summary_with_json, ensure_ascii=False, indent=2)
+            summary_json = prepare_summary_for_storage(summary_with_json)
         except json.JSONDecodeError:
             # If JSON parsing fails, use the raw text as fallback
             logger.warning(f"[Job {job_id}] Failed to parse summary as JSON, storing raw text")
@@ -1892,7 +1865,8 @@ async def update_summary(job_id: int, request: UpdateSummaryRequest, current_use
         raise HTTPException(status_code=404, detail="Job not found")
     
     try:
-        crud.update_job_summary(db, job_id=job_id, summary=request.summary)
+        normalized_summary = normalize_summary_input(request.summary)
+        crud.update_job_summary(db, job_id=job_id, summary=normalized_summary)
         # Return the updated job
         updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
         return updated_job
@@ -2171,6 +2145,113 @@ def validate_and_fix_references(summary_data, valid_segments):
 
     return list(set(invalid_refs_found))  # Remove duplicates
 
+
+ZERO_WIDTH_CHAR_PATTERN = re.compile(r"[\u200B\u200C\u200D\uFEFF]")
+REFERENCE_TOKEN_PATTERN = re.compile(r"\[\d+(?:[-,\s]\d+)*\]")
+
+
+def _normalize_reference_token(token: str) -> str:
+    """Collapse internal whitespace within a reference token."""
+    return re.sub(r"\s+", "", token)
+
+
+def _dedupe_markdown_references(markdown: str) -> str:
+    """Remove duplicate reference markers within markdown text while keeping order."""
+    if not isinstance(markdown, str):
+        return markdown
+
+    normalized = markdown.replace("\r\n", "\n")
+    normalized = ZERO_WIDTH_CHAR_PATTERN.sub("", normalized)
+
+    def dedupe_line(line: str) -> str:
+        seen: set[str] = set()
+
+        def replacement(match: re.Match[str]) -> str:
+            token = match.group(0)
+            key = _normalize_reference_token(token)
+            if key in seen:
+                return ""
+            seen.add(key)
+            return key
+
+        cleaned = REFERENCE_TOKEN_PATTERN.sub(replacement, line)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).rstrip()
+        return cleaned
+
+    lines = [dedupe_line(line) for line in normalized.split("\n")]
+    return "\n".join(lines).strip()
+
+
+def _dedupe_reference_list(refs: Any) -> list[int]:
+    """Return a list of unique integer references preserving order."""
+    if not isinstance(refs, (list, tuple)):
+        return []
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for ref in refs:
+        try:
+            num = int(ref)
+        except (TypeError, ValueError):
+            continue
+        if num in seen:
+            continue
+        seen.add(num)
+        deduped.append(num)
+    return deduped
+
+
+def _sanitize_structured_summary(section: Any) -> Any:
+    """Recursively dedupe reference arrays inside structured summary data."""
+    if isinstance(section, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, value in section.items():
+            if key == "references":
+                sanitized[key] = _dedupe_reference_list(value)
+            else:
+                sanitized[key] = _sanitize_structured_summary(value)
+        return sanitized
+    if isinstance(section, list):
+        return [_sanitize_structured_summary(item) for item in section]
+    return section
+
+
+def prepare_summary_for_storage(summary_obj: Dict[str, Any]) -> str:
+    """Serialize summary data with deduped references for reliable storage."""
+    try:
+        summary_copy = json.loads(json.dumps(summary_obj, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return json.dumps(summary_obj, ensure_ascii=False, indent=2)
+
+    formatted = summary_copy.get("formatted_content")
+    if isinstance(formatted, str):
+        summary_copy["formatted_content"] = _dedupe_markdown_references(formatted)
+
+    structured = summary_copy.get("structured_data")
+    if isinstance(structured, dict):
+        summary_copy["structured_data"] = _sanitize_structured_summary(structured)
+
+    return json.dumps(summary_copy, ensure_ascii=False, indent=2)
+
+
+def normalize_summary_input(summary_payload: str) -> str:
+    """Normalize raw summary payload (JSON or markdown) before persisting."""
+    if not summary_payload:
+        return summary_payload
+
+    summary_payload = summary_payload.strip()
+    if not summary_payload:
+        return summary_payload
+
+    try:
+        parsed = json.loads(summary_payload)
+    except json.JSONDecodeError:
+        return _dedupe_markdown_references(summary_payload)
+
+    if isinstance(parsed, dict):
+        return prepare_summary_for_storage(parsed)
+
+    return summary_payload
+
 def format_summary_as_markdown_with_refs(summary_data, transcript_segments):
     """Convert enhanced JSON summary data to clean, fluent markdown with embedded references."""
     markdown = ""
@@ -2304,6 +2385,9 @@ async def get_current_user_info(current_user: schemas.User = Depends(get_current
         last_login=current_user.last_login,
         job_count=job_count
     )
+
+
+
 
 @app.put("/users/me", response_model=schemas.UserResponse)
 async def update_current_user(

@@ -707,7 +707,7 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     try {
       const markdownFromHtml = turndown.turndown(enhancedHtml);
       const normalizedFromHtml = normalizeMarkdown(markdownFromHtml);
-      if (normalizedFromHtml) {
+      if (normalizedFromHtml || canonicalMarkdown) {
         canonicalMarkdown = normalizedFromHtml;
       }
     } catch (error) {
@@ -833,7 +833,12 @@ export const SummaryWithReferences: React.FC<SummaryWithReferencesProps> = ({
     try {
       const base = baseSummaryData ?? { structured_data: {} };
       const formattedContent = normalizeMarkdown(currentMarkdown);
-      const structuredData = dedupeStructuredSummary(base.structured_data);
+      let structuredData = dedupeStructuredSummary(base.structured_data);
+
+      if (!formattedContent) {
+        structuredData = {};
+      }
+
       const updated: SummaryData = {
         ...base,
         structured_data: structuredData,

@@ -198,12 +198,23 @@ export function JobDetailPage() {
                 if (!message.job_id || message.job_id !== numericJobId) {
                     return;
                 }
-                const updatedSummary = message.summary;
-                if (typeof updatedSummary !== 'string') {
-                    return;
-                }
 
-                setJob(prev => (prev ? { ...prev, summary: updatedSummary } : prev));
+                summarizeLockRef.current = false;
+                setIsSummarizing(false);
+
+                const updatedSummary = typeof message.summary === 'string' ? message.summary : null;
+                const incomingStatus = typeof message.status === 'string' ? message.status : undefined;
+
+                setJob(prev => {
+                    if (!prev) {
+                        return prev;
+                    }
+                    return {
+                        ...prev,
+                        summary: updatedSummary ?? prev.summary,
+                        status: incomingStatus ?? prev.status,
+                    };
+                });
             });
 
             client.connect().catch(err => {
