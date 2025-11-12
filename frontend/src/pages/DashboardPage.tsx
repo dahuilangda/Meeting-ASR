@@ -147,6 +147,13 @@ export function DashboardPage() {
                     ? Math.max(1, data.total_pages)
                     : Math.max(1, Math.ceil(resolvedTotal / resolvedPageSize));
 
+                const normalizedSearch = (searchValue || '').trim();
+                paginationStateRef.current = {
+                    page: resolvedPage,
+                    pageSize: resolvedPageSize,
+                    search: normalizedSearch,
+                };
+
                 setJobs(data.items);
                 setTotalJobs(resolvedTotal);
                 setTotalPages(resolvedTotalPages);
@@ -154,11 +161,16 @@ export function DashboardPage() {
                 setError('');
 
                 if (data.items.length === 0 && resolvedTotal > 0 && resolvedPage > 1) {
-                    setCurrentPage(resolvedPage - 1);
+                    const fallbackPage = Math.max(1, resolvedPage - 1);
+                    paginationStateRef.current = {
+                        page: fallbackPage,
+                        pageSize: resolvedPageSize,
+                        search: normalizedSearch,
+                    };
+                    setCurrentPage(fallbackPage);
                     return;
                 }
-
-                setCurrentPage(resolvedPage);
+                setCurrentPage(prev => (prev === resolvedPage ? prev : resolvedPage));
             } catch (err: any) {
                 setError(err.response?.data?.detail || 'Failed to fetch jobs.');
             } finally {
@@ -270,7 +282,6 @@ export function DashboardPage() {
     };
 
     const prepareForDataReload = useCallback(() => {
-        setJobs([]);
         setIsLoadingJobs(true);
         setRenamingJobId(null);
         setRenameValue('');
@@ -278,6 +289,7 @@ export function DashboardPage() {
 
     const handleUploadSuccess = (_newJob: Job) => {
         const { pageSize: size, search } = paginationStateRef.current;
+        paginationStateRef.current = { page: 1, pageSize: size, search };
         prepareForDataReload();
         if (currentPage !== 1) {
             setCurrentPage(1);
@@ -373,6 +385,14 @@ export function DashboardPage() {
         if (value === searchTerm) {
             return;
         }
+        const trimmedValue = value.trim();
+        const currentState = paginationStateRef.current;
+        const targetPage = currentPage !== 1 ? 1 : currentState.page;
+        paginationStateRef.current = {
+            page: targetPage,
+            pageSize: currentState.pageSize,
+            search: trimmedValue,
+        };
         setSearchTerm(value);
         if (currentPage !== 1) {
             setCurrentPage(1);
@@ -384,6 +404,12 @@ export function DashboardPage() {
         if (nextPage < 1 || nextPage > totalPages || nextPage === currentPage) {
             return;
         }
+        const currentState = paginationStateRef.current;
+        paginationStateRef.current = {
+            page: nextPage,
+            pageSize: currentState.pageSize,
+            search: currentState.search,
+        };
         setCurrentPage(nextPage);
         prepareForDataReload();
     };
@@ -393,10 +419,20 @@ export function DashboardPage() {
         if (!Number.isFinite(selectedSize) || selectedSize <= 0) {
             return;
         }
+        if (selectedSize === pageSize) {
+            return;
+        }
+        const currentState = paginationStateRef.current;
+        const targetPage = currentPage !== 1 ? 1 : currentState.page;
+        paginationStateRef.current = {
+            page: targetPage,
+            pageSize: selectedSize,
+            search: currentState.search,
+        };
         prepareForDataReload();
         setPageSize(selectedSize);
-        if (currentPage !== 1) {
-            setCurrentPage(1);
+        if (targetPage !== currentPage) {
+            setCurrentPage(targetPage);
         }
     };
 
