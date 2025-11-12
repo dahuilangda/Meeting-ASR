@@ -1839,6 +1839,20 @@ Please analyze the transcript and create the structured summary following the sy
         
         # Return the updated job with the summary
         updated_job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
+        if updated_job:
+            try:
+                await manager.send_personal_message(
+                    {
+                        "type": "summary_updated",
+                        "job_id": updated_job.id,
+                        "summary": updated_job.summary,
+                        "status": updated_job.status.value if isinstance(updated_job.status, models.JobStatus) else updated_job.status,
+                        "message": f"Meeting summary updated for '{updated_job.filename}'"
+                    },
+                    current_user.id,
+                )
+            except Exception as notify_error:
+                logger.warning(f"[Job {job_id}] Failed to send summary update notification: {notify_error}")
         return updated_job
     except Exception as e:
         logger.error(f"Error in summarize_job: {e}")

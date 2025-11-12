@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient, generateSummary } from '../api';
+import { JobWebSocketClient, WebSocketMessage } from '../websocket';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { SummaryWithReferences } from '../components/SummaryWithReferences';
 import { AssistantChat } from '../components/AssistantChat';
@@ -178,6 +179,42 @@ export function JobDetailPage() {
             }).catch(() => {
                 setError('Failed to fetch job details.');
             });
+        }
+    }, [jobId]);
+
+    useEffect(() => {
+        const numericJobId = jobId ? parseInt(jobId, 10) : NaN;
+        if (!jobId || Number.isNaN(numericJobId)) {
+            return;
+        }
+
+        try {
+            const client = JobWebSocketClient.fromLocalStorage();
+
+            client.onMessage((message: WebSocketMessage) => {
+                if (message.type !== 'summary_updated') {
+                    return;
+                }
+                if (!message.job_id || message.job_id !== numericJobId) {
+                    return;
+                }
+                const updatedSummary = message.summary;
+                if (typeof updatedSummary !== 'string') {
+                    return;
+                }
+
+                setJob(prev => (prev ? { ...prev, summary: updatedSummary } : prev));
+            });
+
+            client.connect().catch(err => {
+                console.error('Failed to connect job detail WebSocket:', err);
+            });
+
+            return () => {
+                client.disconnect();
+            };
+        } catch (err) {
+            console.error('Failed to initialize WebSocket for job detail page:', err);
         }
     }, [jobId]);
 

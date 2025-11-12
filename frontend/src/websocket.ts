@@ -12,6 +12,7 @@ export interface WebSocketMessage {
   error?: string;
   message?: string;
   queue_position?: number;
+  summary?: string;
 }
 
 export interface JobStatusUpdate {
