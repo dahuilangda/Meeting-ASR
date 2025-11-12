@@ -519,9 +519,9 @@ export function DashboardPage() {
                 )}
 
                 <div className="card">
-                    <div className="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-                        <h5 className="mb-0">My Jobs</h5>
-                        <div className="input-group input-group-sm" style={{ maxWidth: '320px' }}>
+                    <div className="card-header d-flex justify-content-between align-items-center gap-3 flex-nowrap">
+                        <h5 className="mb-0 flex-grow-1">My Jobs</h5>
+                        <div className="input-group input-group-sm" style={{ maxWidth: '320px', flexShrink: 0 }}>
                             <span className="input-group-text" id="jobs-search-addon">
                                 <i className="bi bi-search"></i>
                             </span>
@@ -538,8 +538,8 @@ export function DashboardPage() {
                     </div>
                     <div className="card-body">
                         {error && <div className="alert alert-danger">{error}</div>}
-                        <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-                            <div>
+                        <div className="d-flex justify-content-between align-items-center mb-3 gap-3 flex-nowrap" style={{ minWidth: 0 }}>
+                            <div className="text-truncate" style={{ minWidth: 0 }}>
                                 <small className="text-muted">
                                     Showing {startIndex}-{endIndex} of {totalJobs}
                                     {isSearchActive ? ' matching jobs' : ' jobs'}
@@ -552,8 +552,8 @@ export function DashboardPage() {
                                     )}
                                 </small>
                             </div>
-                            <div className="d-flex align-items-center gap-3 flex-wrap">
-                                <div className="d-flex align-items-center gap-2">
+                            <div className="d-flex align-items-center gap-3 flex-nowrap" style={{ flexShrink: 0 }}>
+                                <div className="d-flex align-items-center gap-2 flex-nowrap">
                                     <small className="text-muted">Rows per page</small>
                                     <select
                                         className="form-select form-select-sm"

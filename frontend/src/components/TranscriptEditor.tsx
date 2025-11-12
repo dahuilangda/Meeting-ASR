@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import axios from 'axios';
 import { apiClient } from '../api';
 
 export interface TranscriptSegment {
@@ -604,7 +603,10 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
 
         const headers = response.headers as Record<string, string | undefined>;
         const contentType = headers['content-type'] || headers['Content-Type'] || 'audio/mpeg';
-        const audioBlob = response.data;
+        const responseBlob = response.data;
+        const audioBlob = responseBlob instanceof Blob && responseBlob.type
+          ? responseBlob
+          : new Blob([responseBlob], { type: contentType });
         const audioBlobUrl = URL.createObjectURL(audioBlob);
         setAudioUrl(audioBlobUrl);
       } catch (error: any) {
