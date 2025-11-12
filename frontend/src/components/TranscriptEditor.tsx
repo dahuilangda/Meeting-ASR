@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import axios from 'axios';
 import { apiClient } from '../api';
 
 export interface TranscriptSegment {
@@ -27,7 +28,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   onDownloadTranscript,
   canDownloadTranscript = false
 }) => {
-  const [isAudioLoading, setIsAudioLoading] = useState<boolean>(true); // Track if audio is still loading
+  const [isAudioLoading, setIsAudioLoading] = useState<boolean>(false); // Track if audio is being fetched
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [originalTranscript, setOriginalTranscript] = useState<TranscriptSegment[] | null>(null);
@@ -54,6 +55,8 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
   );
   const colorIndexRef = useRef(0);
   const [speakerColorMap, setSpeakerColorMap] = useState<Record<string, { bg: string; border: string }>>({});
+  const [audioDownloadProgress, setAudioDownloadProgress] = useState<number | null>(null);
+  const audioAbortControllerRef = useRef<AbortController | null>(null);
 
   const formatTime = (seconds: number): string => {
     // Handle invalid or missing time values
@@ -364,12 +367,31 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
 
   // Fetch job details to get timing information
   useEffect(() => {
-    setIsAudioLoading(true);
+    if (audioAbortControllerRef.current) {
+      audioAbortControllerRef.current.abort();
+      audioAbortControllerRef.current = null;
+    }
+
+    setIsAudioLoading(false);
+    setAudioDownloadProgress(null);
+    setAudioError(null);
+    setAudioUrl(prev => {
+      if (prev) {
+        URL.revokeObjectURL(prev);
+      }
+      return null;
+    });
+
+    let isMounted = true;
+
     const fetchJobDetails = async () => {
       try {
         const response = await apiClient.get(`/jobs/${jobId}`);
+        if (!isMounted) {
+          return;
+        }
         const jobDetails: any = response.data;
-        
+
         if (jobDetails.timing_info) {
           try {
             const timingData = JSON.parse(jobDetails.timing_info);
@@ -377,7 +399,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               const startTime = parseFloat(item.start_time);
               const endTime = parseFloat(item.end_time);
 
-              // Use parsed times if valid, otherwise use fallback timing
               const validStartTime = (!isNaN(startTime) && isFinite(startTime) && startTime >= 0) ? startTime : index * 5;
               const validEndTime = (!isNaN(endTime) && isFinite(endTime) && endTime >= 0) ? endTime : (index + 1) * 5;
 
@@ -391,49 +412,33 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               };
             });
             setSegments(parsedSegments);
-            setOriginalTranscript(parsedSegments); // Store original transcript
+            setOriginalTranscript(parsedSegments);
           } catch (error) {
             console.error("Error parsing timing info:", error);
-            // Fallback to parsing transcript text if timing info is invalid
             const fallbackSegments = parseTranscriptFallback(jobDetails.transcript || '');
             setSegments(fallbackSegments);
             setOriginalTranscript(fallbackSegments);
           }
         } else {
-          // If no timing info available, parse from transcript text
           const fallbackSegments = parseTranscriptFallback(jobDetails.transcript || '');
           setSegments(fallbackSegments);
           setOriginalTranscript(fallbackSegments);
         }
-        
-        // Create an authenticated audio URL by fetching the audio file content and creating a blob URL
-        // This handles authentication properly since we use the apiClient which includes the auth token
-        try {
-          const audioResponse = await apiClient.get(`/jobs/${jobId}/audio`, {
-            responseType: 'blob' // Important: get as blob
-          });
-          const audioBlob = new Blob([audioResponse.data as BlobPart], { type: audioResponse.headers['content-type'] || 'audio/mpeg' });
-          const audioBlobUrl = URL.createObjectURL(audioBlob);
-          
-          setAudioUrl(audioBlobUrl);
-          setIsAudioLoading(false);
-        } catch (audioError) {
-          console.error("Error fetching audio file:", audioError);
-          setAudioError("Unable to load audio file. Audio playback may not work.");
-          setAudioUrl(null);
-          setIsAudioLoading(false);
-        }
       } catch (error) {
         console.error("Error fetching job details:", error);
-        // Fallback to parsing transcript text
+        if (!isMounted) {
+          return;
+        }
         setSegments(parseTranscriptFallback(initialTranscript || ''));
         setAudioError("Unable to load job details. Audio playback may not work.");
-        setAudioUrl(null); // Don't set audio URL if job details fail
-        setIsAudioLoading(false);
       }
     };
 
     fetchJobDetails();
+
+    return () => {
+      isMounted = false;
+    };
   }, [jobId, initialTranscript]);
 
   useEffect(() => {
@@ -444,6 +449,15 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
       }
     };
   }, [audioUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (audioAbortControllerRef.current) {
+        audioAbortControllerRef.current.abort();
+        audioAbortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   // Fallback function to parse transcript when timing info is not available
   const parseTranscriptFallback = (transcriptText: string): TranscriptSegment[] => {
@@ -503,12 +517,25 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     };
   }, [hasChanges, segments, originalTranscript, saveTranscript]);
 
-  const handleSpeakerPlay = (startTime: number, segmentId: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = startTime;
-      audioRef.current.play();
+  const handleSpeakerPlay = async (startTime: number, segmentId: number) => {
+    if (!audioUrl) {
+      await loadAudio(false);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    const element = audioRef.current;
+    if (!element) {
+      return;
+    }
+
+    element.currentTime = startTime;
+    try {
+      await element.play();
       setIsPlaying(true);
-      setCurrentSpeakerPlaying(segmentId); // Track which speaker segment is currently playing
+      setCurrentSpeakerPlaying(segmentId);
+    } catch (err) {
+      console.error('Failed to play requested segment.', err);
+      setAudioError('Unable to play the selected segment. Try reloading the audio.');
     }
   };
 
@@ -520,19 +547,130 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
     }
   };
 
-  const handlePlayPause = () => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
-        audioRef.current.play();
+  const audioLoadPromiseRef = useRef<Promise<void> | null>(null);
+
+  const loadAudio = useCallback(async (autoPlay: boolean = false) => {
+    if (audioUrl) {
+      if (autoPlay && audioRef.current) {
+        try {
+          await audioRef.current.play();
+          setIsPlaying(true);
+        } catch (err) {
+          console.error('Auto-play failed after audio load.', err);
+          setAudioError('Audio is ready, but playback was blocked. Press play to start.');
+        }
       }
-      setIsPlaying(!isPlaying);
-      if (isPlaying) {
-        setCurrentSpeakerPlaying(null); // Reset when global play/pause is used
+      return;
+    }
+
+    if (audioLoadPromiseRef.current) {
+      await audioLoadPromiseRef.current;
+      if (autoPlay && audioRef.current) {
+        try {
+          await audioRef.current.play();
+          setIsPlaying(true);
+        } catch (err) {
+          console.error('Auto-play failed after queued load.', err);
+          setAudioError('Audio loaded. Press play to start playback.');
+        }
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    audioAbortControllerRef.current = controller;
+    setIsAudioLoading(true);
+    setAudioDownloadProgress(0);
+    setAudioError(null);
+
+    const loadPromise = (async () => {
+      try {
+        const requestConfig = {
+          responseType: 'blob' as const,
+          signal: controller.signal,
+          onDownloadProgress: (event: ProgressEvent) => {
+            if (event.lengthComputable && event.total) {
+              const nextProgress = Math.round((event.loaded / event.total) * 100);
+              setAudioDownloadProgress(nextProgress);
+            }
+          },
+        } as const;
+
+        const response = await apiClient.get<Blob>(`/jobs/${jobId}/audio`, requestConfig as any);
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const headers = response.headers as Record<string, string | undefined>;
+        const contentType = headers['content-type'] || headers['Content-Type'] || 'audio/mpeg';
+        const audioBlob = response.data;
+        const audioBlobUrl = URL.createObjectURL(audioBlob);
+        setAudioUrl(audioBlobUrl);
+      } catch (error: any) {
+        if (controller.signal.aborted || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+          return;
+        }
+        console.error('Error fetching audio file:', error);
+        setAudioError('Unable to load audio file. Audio playback may not work.');
+        setAudioUrl(null);
+      } finally {
+        audioAbortControllerRef.current = null;
+        setAudioDownloadProgress(null);
+        setIsAudioLoading(false);
+        audioLoadPromiseRef.current = null;
+      }
+    })();
+
+    audioLoadPromiseRef.current = loadPromise;
+    await loadPromise;
+
+    if (autoPlay) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (audioRef.current) {
+        try {
+          await audioRef.current.play();
+          setIsPlaying(true);
+        } catch (err) {
+          console.error('Auto-play failed after loading audio.', err);
+          setAudioError('Audio loaded. Press play to start playback.');
+        }
       }
     }
-  };
+  }, [audioUrl, jobId]);
+
+  const handlePlayPause = useCallback(async () => {
+    if (isAudioLoading) {
+      return;
+    }
+
+    if (!audioUrl) {
+      await loadAudio(true);
+      return;
+    }
+
+    const element = audioRef.current;
+    if (!element) {
+      return;
+    }
+
+    if (element.paused) {
+      try {
+        await element.play();
+        setIsPlaying(true);
+      } catch (err) {
+        console.error('Failed to play audio.', err);
+        setAudioError('Unable to play audio automatically.');
+      }
+    } else {
+      element.pause();
+      setIsPlaying(false);
+    }
+
+    if (element.paused) {
+      setCurrentSpeakerPlaying(null);
+    }
+  }, [audioUrl, isAudioLoading, loadAudio]);
 
   const handleAudioEnd = () => {
     setIsPlaying(false);
@@ -607,7 +745,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
           <h6 className="mb-0 text-muted d-flex align-items-center" style={{ fontSize: '0.9rem', fontWeight: '500', margin: 0, lineHeight: '1.2' }}>
             <i className="bi bi-file-text me-2" style={{ fontSize: '0.8rem' }}></i>Transcript
           </h6>
-          {audioUrl && !isAudioLoading ? (
+          {audioUrl ? (
             <>
               <audio
                 ref={audioRef}
@@ -620,7 +758,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               <button
                 className="btn btn-sm btn-outline-secondary"
                 onClick={handlePlayPause}
-                disabled={!!audioError}
+                disabled={!!audioError || isAudioLoading}
                 title={isPlaying ? "Pause" : "Play"}
                 style={{ height: '28px', width: '28px', padding: '0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
@@ -632,11 +770,22 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               </button>
             </>
           ) : isAudioLoading ? (
-            <span className="text-muted small" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
-              <span className="spinner-border spinner-border-sm me-1" style={{ width: '0.7rem', height: '0.7rem' }}></span>Loading audio...
+            <span className="text-muted small d-flex align-items-center" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap', gap: '0.25rem' }}>
+              <span className="spinner-border spinner-border-sm" style={{ width: '0.7rem', height: '0.7rem' }}></span>
+              <span>
+                Loading audio{typeof audioDownloadProgress === 'number' ? ` ${audioDownloadProgress}%` : '...'}
+              </span>
             </span>
           ) : (
-            <span className="text-muted small" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Audio unavailable</span>
+            <button
+              className="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-1"
+              onClick={() => loadAudio(true)}
+              disabled={isAudioLoading}
+              style={{ height: '28px', padding: '0 8px' }}
+            >
+              <i className="bi bi-cloud-download"></i>
+              <span style={{ fontSize: '0.7rem' }}>Load audio</span>
+            </button>
           )}
         </div>
 
@@ -956,7 +1105,13 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                     </button>
                     <button
                       className={`btn btn-sm py-0 ${isCurrentlyPlaying ? 'btn-danger' : 'btn-outline-primary'}`}
-                      onClick={() => isCurrentlyPlaying ? handleSpeakerPause() : handleSpeakerPlay(group.startTime, group.id)}
+                      onClick={() => {
+                        if (isCurrentlyPlaying) {
+                          handleSpeakerPause();
+                        } else {
+                          void handleSpeakerPlay(group.startTime, group.id);
+                        }
+                      }}
                       title={isCurrentlyPlaying ? 'Stop playback' : 'Play this section'}
                       disabled={isAudioLoading || !!audioError}
                       style={{ fontSize: '0.7rem', padding: '2px 6px' }}

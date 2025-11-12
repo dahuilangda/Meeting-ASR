@@ -151,7 +151,37 @@ def create_job(db: Session, filename: str, owner_id: int, file_path: str = None,
     return db_job
 
 def get_jobs_by_owner(db: Session, owner_id: int):
-    return db.query(models.Job).filter(models.Job.owner_id == owner_id).order_by(models.Job.created_at.desc()).all()
+    return (
+        db.query(models.Job)
+        .filter(models.Job.owner_id == owner_id)
+        .order_by(models.Job.created_at.desc())
+        .all()
+    )
+
+
+def get_jobs_page_by_owner(
+    db: Session,
+    owner_id: int,
+    skip: int,
+    limit: int,
+    search: Optional[str] = None,
+) -> tuple[list[models.Job], int]:
+    query = db.query(models.Job).filter(models.Job.owner_id == owner_id)
+
+    if search:
+        pattern = f"%{search.lower()}%"
+        query = query.filter(func.lower(models.Job.filename).like(pattern))
+
+    total = query.count()
+
+    jobs = (
+        query.order_by(models.Job.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    return jobs, total
 
 def get_job(db: Session, job_id: int, owner_id: int) -> Optional[models.Job]:
     return db.query(models.Job).filter(models.Job.id == job_id, models.Job.owner_id == owner_id).first()

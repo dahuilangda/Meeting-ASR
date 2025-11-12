@@ -27,6 +27,7 @@ import json
 import re
 import asyncio
 import logging
+import math
 import threading
 import mimetypes
 from pathlib import Path
@@ -169,6 +170,77 @@ def hydrate_job_transcript_from_disk(job: models.Job) -> None:
         job.transcript = text_path.read_text(encoding="utf-8")
     if segments_path.exists():
         job.timing_info = segments_path.read_text(encoding="utf-8")
+
+
+def build_compressed_audio_path(original_path: str) -> str:
+    base, ext = os.path.splitext(original_path)
+    if base.endswith("_compressed") and ext.lower() == ".mp3":
+        return original_path
+    return f"{base}_compressed.mp3"
+
+
+def compress_audio_file(source_path: str) -> Optional[str]:
+    """Compress an audio file using ffmpeg and return the compressed path if successful."""
+    if not source_path or not os.path.exists(source_path):
+        logger.warning(f"compress_audio_file: source missing at {source_path}")
+        return None
+
+    target_path = build_compressed_audio_path(source_path)
+
+    if os.path.exists(target_path):
+        return target_path
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                source_path,
+                "-vn",
+                "-ar",
+                "44100",
+                "-ac",
+                "2",
+                "-b:a",
+                "128k",
+                "-loglevel",
+                "error",
+                target_path,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        logger.info(f"Compressed audio created at {target_path}")
+        return target_path
+    except FileNotFoundError:
+        logger.error("ffmpeg executable not found. Audio compression skipped.")
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        logger.error(f"ffmpeg compression failed for {source_path}: {stderr}")
+    except Exception as exc:
+        logger.error(f"Unexpected error during audio compression for {source_path}: {exc}")
+
+    if os.path.exists(target_path):
+        try:
+            os.remove(target_path)
+        except OSError:
+            pass
+    return None
+
+
+def choose_audio_source(path_candidates: List[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return the best available audio path and the original path used for compression."""
+    for candidate in path_candidates:
+        if not candidate:
+            continue
+        compressed_path = build_compressed_audio_path(candidate)
+        if os.path.exists(compressed_path):
+            return compressed_path, candidate
+        if os.path.exists(candidate):
+            return candidate, candidate
+    return None, None
 
 
 def build_job_share_response(share: models.JobShare) -> schemas.JobShareResponse:
@@ -723,6 +795,9 @@ async def upload_file(
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    # Schedule background compression to optimize playback size
+    background_tasks.add_task(compress_audio_file, filepath)
+
     # Create job in database
     job = crud.create_job(
         db=db,
@@ -760,14 +835,55 @@ async def upload_file(
 
     return job
 
-@app.get("/jobs", response_model=List[schemas.Job])
-def get_user_jobs(current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Get all jobs for the current user"""
-    jobs = crud.get_jobs_by_owner(db, owner_id=current_user.id)
-    # Load transcript from disk if available
+@app.get("/jobs", response_model=schemas.JobListResponse)
+def get_user_jobs(
+    page: int = Query(default=1, ge=1, description="Page number starting from 1"),
+    page_size: int = Query(default=10, ge=1, le=100, description="Number of jobs per page"),
+    search: Optional[str] = Query(default=None, description="Optional filename search filter"),
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get paginated jobs for the current user."""
+    sanitized_page_size = max(1, min(page_size, 100))
+    sanitized_page = max(page, 1)
+    trimmed_search = (search or "").strip() or None
+
+    skip = (sanitized_page - 1) * sanitized_page_size
+    jobs, total = crud.get_jobs_page_by_owner(
+        db,
+        owner_id=current_user.id,
+        skip=skip,
+        limit=sanitized_page_size,
+        search=trimmed_search,
+    )
+
+    total_pages = max(math.ceil(total / sanitized_page_size), 1) if total else 1
+
+    if total and sanitized_page > total_pages:
+        sanitized_page = total_pages
+        skip = (sanitized_page - 1) * sanitized_page_size
+        jobs, total = crud.get_jobs_page_by_owner(
+            db,
+            owner_id=current_user.id,
+            skip=skip,
+            limit=sanitized_page_size,
+            search=trimmed_search,
+        )
+        total_pages = max(math.ceil(total / sanitized_page_size), 1)
+    elif total == 0:
+        sanitized_page = 1
+        total_pages = 1
+
     for job in jobs:
         hydrate_job_transcript_from_disk(job)
-    return jobs
+
+    return schemas.JobListResponse(
+        items=jobs,
+        total=total,
+        page=sanitized_page,
+        page_size=sanitized_page_size,
+        total_pages=total_pages,
+    )
 
 @app.get("/queue/status", response_model=schemas.QueueStatus)
 async def get_queue_status(current_user: schemas.User = Depends(get_current_user)):
@@ -860,22 +976,27 @@ def delete_job(job_id: int, current_user: schemas.User = Depends(get_current_use
 
 # Endpoint to get audio file for a job (redirects to static file)
 @app.get("/jobs/{job_id}/audio")
-def get_job_audio(job_id: int, current_user: schemas.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_job_audio(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: schemas.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = crud.get_job(db, job_id=job_id, owner_id=current_user.id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    audio_path = None
-    if job.file_path and os.path.exists(job.file_path):
-        audio_path = job.file_path
-    else:
-        upload_dir = "uploads"
-        candidate_path = os.path.join(upload_dir, job.filename)
-        if os.path.exists(candidate_path):
-            audio_path = candidate_path
+    upload_dir = "uploads"
+    candidate_paths = [job.file_path, os.path.join(upload_dir, job.filename)]
+    audio_path, original_source = choose_audio_source(candidate_paths)
 
     if not audio_path:
         raise HTTPException(status_code=404, detail="Audio file not found")
+
+    if original_source:
+        compressed_target = build_compressed_audio_path(original_source)
+        if not os.path.exists(compressed_target):
+            background_tasks.add_task(compress_audio_file, original_source)
 
     media_type, _ = mimetypes.guess_type(audio_path)
     return FileResponse(
@@ -1249,6 +1370,7 @@ def download_shared_summary(
 @app.get("/public/shares/{share_token}/audio")
 def download_shared_audio(
     share_token: str,
+    background_tasks: BackgroundTasks,
     access_code: Optional[str] = Query(default=None, alias="access_code"),
     x_share_code: Optional[str] = Header(default=None, alias="X-Share-Code"),
     db: Session = Depends(get_db),
@@ -1267,19 +1389,19 @@ def download_shared_audio(
     if not job:
         raise HTTPException(status_code=404, detail="Shared job not found")
 
-    audio_path: Optional[str] = None
-    if job.file_path and os.path.exists(job.file_path):
-        audio_path = job.file_path
-    else:
-        upload_dir = "uploads"
-        candidate_path = os.path.join(upload_dir, job.filename)
-        if os.path.exists(candidate_path):
-            audio_path = candidate_path
+    upload_dir = "uploads"
+    candidate_paths = [job.file_path, os.path.join(upload_dir, job.filename)]
+    audio_path, original_source = choose_audio_source(candidate_paths)
 
     if not audio_path:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     crud.touch_job_share_access(db, share)
+
+    if original_source:
+        compressed_target = build_compressed_audio_path(original_source)
+        if not os.path.exists(compressed_target):
+            background_tasks.add_task(compress_audio_file, original_source)
 
     media_type, _ = mimetypes.guess_type(audio_path)
     filename = os.path.basename(audio_path)

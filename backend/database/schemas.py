@@ -43,6 +43,14 @@ class Job(JobBase):
     summary: Optional[str] = None
 
 
+class JobListResponse(BaseModel):
+    items: List[Job]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class JobShareCreateRequest(BaseModel):
     expires_in_days: Optional[int] = None
     expires_at: Optional[datetime.datetime] = None

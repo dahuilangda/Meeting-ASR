@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
 import { apiClient, renameJob } from '../api';
 import { getCurrentUser, User } from '../api/user';
-import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
 import { JobWebSocketClient, WebSocketMessage } from '../websocket';
 
 interface Job {
@@ -20,13 +20,20 @@ interface QueueStatus {
     active_jobs: number;
     queued_jobs: number;
     total_queue_size: number;
-    jobs: Array<{
+    jobs?: Array<{
         job_id: number;
         status: string;
         progress: number;
         error_message?: string;
-        queue_position?: number;
     }>;
+}
+
+interface JobListResponse {
+    items: Job[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
 }
 
 function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }) {
@@ -34,18 +41,19 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
     const [isUploading, setIsUploading] = useState(false);
     const [error, setError] = useState('');
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files) {
-            setFile(e.target.files[0]);
+    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (event.target.files) {
+            setFile(event.target.files[0]);
         }
     };
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+    const handleSubmit = async (event: React.FormEvent) => {
+        event.preventDefault();
         if (!file) {
             setError('Please select a file to upload.');
             return;
         }
+
         setIsUploading(true);
         setError('');
         const formData = new FormData();
@@ -56,12 +64,12 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             onUploadSuccess(response.data as Job);
-            setFile(null); // Reset file input
+            setFile(null);
         } catch (err: any) {
             if (err.response?.status === 429) {
-                setError('Too many concurrent jobs. Please wait for current jobs to complete.');
+                setError('Too many concurrent jobs. Please wait for current jobs to finish.');
             } else if (err.response?.status === 413) {
-                setError('File too large. Maximum size is 200MB.');
+                setError('File too large. Maximum upload size is 200MB.');
             } else if (err.response?.status === 503) {
                 setError('Job queue is full. Please try again later.');
             } else {
@@ -74,7 +82,9 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
 
     return (
         <div className="card mb-4">
-            <div className="card-header"><h5>Upload New Audio/Video File</h5></div>
+            <div className="card-header">
+                <h5 className="mb-0">Upload New Audio/Video File</h5>
+            </div>
             <div className="card-body">
                 {error && <div className="alert alert-danger">{error}</div>}
                 <form onSubmit={handleSubmit}>
@@ -82,7 +92,7 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
                         <input className="form-control" type="file" onChange={handleFileChange} />
                     </div>
                     <button type="submit" className="btn btn-primary" disabled={isUploading || !file}>
-                        {isUploading ? 'Uploading...' : 'Upload and Process'}
+                        {isUploading ? 'Uploading…' : 'Upload and Process'}
                     </button>
                 </form>
             </div>
@@ -94,49 +104,229 @@ export function DashboardPage() {
     const [jobs, setJobs] = useState<Job[]>([]);
     const [error, setError] = useState('');
     const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
-    const [wsNotification, setWsNotification] = useState<string>('');
-    const [isUploading, setIsUploading] = useState(false);
+    const [wsNotification, setWsNotification] = useState('');
+    const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
     const [renamingJobId, setRenamingJobId] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState('');
     const [isRenaming, setIsRenaming] = useState(false);
-    const [currentUser, setCurrentUser] = useState<User | null>(null);
-    const [wsClient, setWsClient] = useState<JobWebSocketClient | null>(null);
+    const [isJobMutating, setIsJobMutating] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(10);
+    const [totalJobs, setTotalJobs] = useState(0);
+    const [totalPages, setTotalPages] = useState(1);
+    const [isLoadingJobs, setIsLoadingJobs] = useState(true);
+    const paginationStateRef = useRef<{ page: number; pageSize: number; search: string }>({
+        page: 1,
+        pageSize: 10,
+        search: '',
+    });
     const navigate = useNavigate();
 
-    const fetchJobs = () => {
-        apiClient.get('/jobs').then(response => {
-            setJobs(response.data as Job[]);
-        }).catch(err => {
-            setError('Failed to fetch jobs.');
-        });
+    const fetchJobs = useCallback(
+        async (page: number, size: number, searchValue: string, options?: { suppressLoader?: boolean }) => {
+            if (!options?.suppressLoader) {
+                setIsLoadingJobs(true);
+            }
+            try {
+                const response = await apiClient.get<JobListResponse>('/jobs', {
+                    params: {
+                        page,
+                        page_size: size,
+                        search: searchValue || undefined,
+                    },
+                });
+
+                const data = response.data;
+                const resolvedPageSize = data.page_size || size;
+                const resolvedTotal = data.total || 0;
+                const resolvedPage = data.page || page;
+                const resolvedTotalPages = data.total_pages
+                    ? Math.max(1, data.total_pages)
+                    : Math.max(1, Math.ceil(resolvedTotal / resolvedPageSize));
+
+                setJobs(data.items);
+                setTotalJobs(resolvedTotal);
+                setTotalPages(resolvedTotalPages);
+                setPageSize(resolvedPageSize);
+                setError('');
+
+                if (data.items.length === 0 && resolvedTotal > 0 && resolvedPage > 1) {
+                    setCurrentPage(resolvedPage - 1);
+                    return;
+                }
+
+                setCurrentPage(resolvedPage);
+            } catch (err: any) {
+                setError(err.response?.data?.detail || 'Failed to fetch jobs.');
+            } finally {
+                if (!options?.suppressLoader) {
+                    setIsLoadingJobs(false);
+                }
+            }
+        },
+        []
+    );
+
+    const refreshJobs = useCallback(async () => {
+        const { page, pageSize: size, search } = paginationStateRef.current;
+        await fetchJobs(page, size, search, { suppressLoader: true });
+    }, [fetchJobs]);
+
+    const fetchQueueStatus = useCallback(async () => {
+        try {
+            const response = await apiClient.get<QueueStatus>('/queue/status');
+            setQueueStatus(response.data);
+        } catch (err) {
+            console.error('Failed to fetch queue status:', err);
+        }
+    }, []);
+
+    useEffect(() => {
+        paginationStateRef.current = { page: currentPage, pageSize, search: debouncedSearch };
+    }, [currentPage, pageSize, debouncedSearch]);
+
+    useEffect(() => {
+        const timeoutId = window.setTimeout(() => setDebouncedSearch(searchTerm.trim()), 300);
+        return () => window.clearTimeout(timeoutId);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        void fetchJobs(currentPage, pageSize, debouncedSearch);
+    }, [currentPage, pageSize, debouncedSearch, fetchJobs]);
+
+    useEffect(() => {
+        const intervalId = window.setInterval(() => {
+            const { page, pageSize: size, search } = paginationStateRef.current;
+            void fetchJobs(page, size, search, { suppressLoader: true });
+        }, 10000);
+        return () => window.clearInterval(intervalId);
+    }, [fetchJobs]);
+
+    useEffect(() => {
+        void fetchQueueStatus();
+        const intervalId = window.setInterval(() => {
+            void fetchQueueStatus();
+        }, 10000);
+        return () => window.clearInterval(intervalId);
+    }, [fetchQueueStatus]);
+
+    useEffect(() => {
+        const loadUser = async () => {
+            try {
+                const user = await getCurrentUser();
+                setCurrentUser(user);
+            } catch (err) {
+                console.error('Failed to load current user:', err);
+            }
+        };
+        void loadUser();
+    }, []);
+
+    useEffect(() => {
+        if (!currentUser) {
+            return;
+        }
+        try {
+            const client = JobWebSocketClient.fromLocalStorage();
+            client.onMessage((message: WebSocketMessage) => {
+                if (message.message) {
+                    setWsNotification(message.message);
+                    setTimeout(() => setWsNotification(''), 5000);
+                }
+                if (message.job_id) {
+                    void refreshJobs();
+                    void fetchQueueStatus();
+                }
+            });
+            client.onStatusChange((jobId: number, status: string, progress: number) => {
+                setJobs(prevJobs =>
+                    prevJobs.map(job =>
+                        job.id === jobId ? { ...job, status, progress: progress || 0 } : job
+                    )
+                );
+            });
+            client.onError(err => {
+                if (typeof err === 'string') {
+                    setError(err);
+                } else {
+                    setError('WebSocket connection error.');
+                }
+            });
+            client.connect().then(() => setWsClient(client)).catch(err => {
+                console.error('WebSocket connection failed:', err);
+            });
+            return () => client.disconnect();
+        } catch (err) {
+            console.error('Failed to create WebSocket client:', err);
+        }
+    }, [currentUser, refreshJobs, fetchQueueStatus]);
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        navigate('/login');
+    };
+
+    const prepareForDataReload = useCallback(() => {
+        setJobs([]);
+        setIsLoadingJobs(true);
+        setRenamingJobId(null);
+        setRenameValue('');
+    }, []);
+
+    const handleUploadSuccess = (_newJob: Job) => {
+        const { pageSize: size, search } = paginationStateRef.current;
+        prepareForDataReload();
+        if (currentPage !== 1) {
+            setCurrentPage(1);
+        } else {
+            void fetchJobs(1, size, search);
+        }
+        void fetchQueueStatus();
     };
 
     const handleDeleteJob = async (jobId: number) => {
         if (!window.confirm('Are you sure you want to delete this job?')) {
             return;
         }
-        
-        setIsUploading(true); // Use the same state to prevent other actions during delete
-        
+        setIsJobMutating(true);
         try {
             await apiClient.delete(`/jobs/${jobId}`);
             setJobs(prev => prev.filter(job => job.id !== jobId));
+            await refreshJobs();
             setError('');
+            await fetchQueueStatus();
         } catch (err) {
             setError('Failed to delete the job. Please try again.');
+            try {
+                await refreshJobs();
+            } catch (refreshErr) {
+                console.error('Failed to refresh jobs after delete error:', refreshErr);
+            }
         } finally {
-            setIsUploading(false);
+            setIsJobMutating(false);
         }
     };
 
     const handleCancelJob = async (jobId: number) => {
+        setIsJobMutating(true);
         try {
             await apiClient.post(`/jobs/${jobId}/cancel`);
             setJobs(prev => prev.filter(job => job.id !== jobId));
+            await refreshJobs();
+            await fetchQueueStatus();
             setError('');
         } catch (err: any) {
             setError(err.response?.data?.detail || 'Failed to cancel the job. Please try again.');
+            try {
+                await refreshJobs();
+            } catch (refreshErr) {
+                console.error('Failed to refresh jobs after cancel error:', refreshErr);
+            }
+        } finally {
+            setIsJobMutating(false);
         }
     };
 
@@ -155,13 +345,11 @@ export function DashboardPage() {
         if (renamingJobId === null) {
             return;
         }
-
         const trimmedName = renameValue.trim();
         if (!trimmedName) {
             setError('Filename cannot be empty.');
             return;
         }
-
         setIsRenaming(true);
         try {
             const updatedJob = await renameJob(renamingJobId, trimmedName);
@@ -180,108 +368,52 @@ export function DashboardPage() {
         }
     };
 
-    useEffect(() => {
-        fetchJobs();
-        const interval = setInterval(fetchJobs, 10000); // Reduced polling frequency since we have WebSocket
-        return () => clearInterval(interval);
-    }, []);
-
-    // Initialize WebSocket connection
-    useEffect(() => {
-        if (currentUser) {
-            try {
-                const client = JobWebSocketClient.fromLocalStorage();
-
-                client.onMessage((message: WebSocketMessage) => {
-                    console.log('WebSocket message:', message);
-
-                    // Show notification
-                    if (message.message) {
-                        setWsNotification(message.message);
-                        setTimeout(() => setWsNotification(''), 5000);
-                    }
-
-                    // Update jobs list
-                    if (message.job_id) {
-                        fetchJobs();
-                    }
-                });
-
-                client.onStatusChange((jobId: number, status: string, progress: number) => {
-                    // Update specific job in the list
-                    setJobs(prevJobs =>
-                        prevJobs.map(job =>
-                            job.id === jobId
-                                ? { ...job, status, progress: progress || 0 }
-                                : job
-                        )
-                    );
-                });
-
-                client.onError((error: string) => {
-                    setError(error);
-                });
-
-                client.connect().then(() => {
-                    setWsClient(client);
-                    console.log('WebSocket connected successfully');
-                }).catch(error => {
-                    console.error('Failed to connect WebSocket:', error);
-                });
-
-                // Fetch queue status
-                apiClient.get('/queue/status').then(response => {
-                    setQueueStatus(response.data as QueueStatus);
-                }).catch(err => {
-                    console.error('Failed to fetch queue status:', err);
-                });
-
-                return () => {
-                    client.disconnect();
-                };
-            } catch (error) {
-                console.error('Failed to create WebSocket client:', error);
-            }
+    const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const value = event.target.value;
+        if (value === searchTerm) {
+            return;
         }
-    }, [currentUser]);
-
-    useEffect(() => {
-        const loadUser = async () => {
-            try {
-                const user = await getCurrentUser();
-                setCurrentUser(user);
-            } catch (error) {
-                console.error('Failed to load user:', error);
-            }
-        };
-        loadUser();
-    }, []);
-
-    const handleLogout = () => {
-        localStorage.removeItem('token');
-        navigate('/login');
+        setSearchTerm(value);
+        if (currentPage !== 1) {
+            setCurrentPage(1);
+        }
+        prepareForDataReload();
     };
 
-    const handleUploadSuccess = (newJob: Job) => {
-        setJobs(prev => [newJob, ...prev]);
+    const handlePageChange = (nextPage: number) => {
+        if (nextPage < 1 || nextPage > totalPages || nextPage === currentPage) {
+            return;
+        }
+        setCurrentPage(nextPage);
+        prepareForDataReload();
     };
 
-    const filteredJobs = useMemo(() => {
-        const term = searchTerm.trim().toLowerCase();
-        if (!term) {
-            return jobs;
+    const handlePageSizeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+        const selectedSize = Number(event.target.value);
+        if (!Number.isFinite(selectedSize) || selectedSize <= 0) {
+            return;
         }
-        return jobs.filter(job => {
-            const filenameMatch = job.filename.toLowerCase().includes(term);
-            const statusMatch = job.status.toLowerCase().includes(term);
-            const dateMatch = new Date(job.created_at).toLocaleString().toLowerCase().includes(term);
-            return filenameMatch || statusMatch || dateMatch;
-        });
-    }, [jobs, searchTerm]);
+        prepareForDataReload();
+        setPageSize(selectedSize);
+        if (currentPage !== 1) {
+            setCurrentPage(1);
+        }
+    };
+
+    const isSearchActive = debouncedSearch.length > 0;
+    const hasJobsOnPage = jobs.length > 0;
+    const startIndex = hasJobsOnPage ? (currentPage - 1) * pageSize + 1 : 0;
+    const endIndex = hasJobsOnPage ? startIndex + jobs.length - 1 : 0;
+    const basePageSizeOptions = [5, 10, 20, 50];
+    const pageSizeOptions = basePageSizeOptions.includes(pageSize)
+        ? basePageSizeOptions
+        : [...basePageSizeOptions, pageSize].sort((a, b) => a - b);
+    const noJobsMessage = isSearchActive ? 'No jobs match your search.' : 'No jobs available yet.';
+    const showEmptyState = !isLoadingJobs && jobs.length === 0;
+    const displayedPage = totalPages > 0 ? Math.min(currentPage, totalPages) : 0;
 
     return (
         <>
-            {/* Navigation Bar */}
             <Navbar bg="light" variant="light" expand="lg" className="mb-4 border-bottom shadow-sm">
                 <div className="container">
                     <Navbar.Brand as={Link} to="/" className="text-primary fw-bold">
@@ -312,10 +444,16 @@ export function DashboardPage() {
                                                     <div>
                                                         <div>{currentUser.full_name || currentUser.username}</div>
                                                         <small className="text-muted">
-                                                            <Badge bg={
-                                                                currentUser.role === 'super_admin' ? 'danger' :
-                                                                currentUser.role === 'admin' ? 'warning' : 'primary'
-                                                            } className="me-1">
+                                                            <Badge
+                                                                bg={
+                                                                    currentUser.role === 'super_admin'
+                                                                        ? 'danger'
+                                                                        : currentUser.role === 'admin'
+                                                                            ? 'warning'
+                                                                            : 'primary'
+                                                                }
+                                                                className="me-1"
+                                                            >
                                                                 {currentUser.role.replace('_', ' ').toUpperCase()}
                                                             </Badge>
                                                         </small>
@@ -344,7 +482,6 @@ export function DashboardPage() {
             <div className="container mt-4">
                 <h1 className="mb-4">Dashboard</h1>
 
-                {/* WebSocket Notifications */}
                 {wsNotification && (
                     <Alert variant="success" className="mb-3" dismissible onClose={() => setWsNotification('')}>
                         {wsNotification}
@@ -353,16 +490,13 @@ export function DashboardPage() {
 
                 <UploadForm onUploadSuccess={handleUploadSuccess} />
 
-                {/* Queue Status Display */}
                 {queueStatus && (queueStatus.active_jobs > 0 || queueStatus.queued_jobs > 0) && (
                     <div className="card mb-4">
                         <div className="card-header">
                             <h6 className="mb-0">
                                 <i className="bi bi-clock me-2"></i>
                                 Queue Status
-                                {wsClient && (
-                                    <Badge bg="success" className="ms-2">Live</Badge>
-                                )}
+                                {wsClient && <Badge bg="success" className="ms-2">Live</Badge>}
                             </h6>
                         </div>
                         <div className="card-body py-2">
@@ -387,7 +521,7 @@ export function DashboardPage() {
                 <div className="card">
                     <div className="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
                         <h5 className="mb-0">My Jobs</h5>
-                        <div className="input-group input-group-sm" style={{ maxWidth: '260px' }}>
+                        <div className="input-group input-group-sm" style={{ maxWidth: '320px' }}>
                             <span className="input-group-text" id="jobs-search-addon">
                                 <i className="bi bi-search"></i>
                             </span>
@@ -398,130 +532,234 @@ export function DashboardPage() {
                                 aria-label="Search jobs"
                                 aria-describedby="jobs-search-addon"
                                 value={searchTerm}
-                                onChange={event => setSearchTerm(event.target.value)}
+                                onChange={handleSearchChange}
                             />
                         </div>
                     </div>
                     <div className="card-body">
                         {error && <div className="alert alert-danger">{error}</div>}
-                    <table className="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Filename</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {filteredJobs.length === 0 ? (
+                        <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                            <div>
+                                <small className="text-muted">
+                                    Showing {startIndex}-{endIndex} of {totalJobs}
+                                    {isSearchActive ? ' matching jobs' : ' jobs'}
+                                    <span className="ms-2">Page {displayedPage} of {totalPages}</span>
+                                    {isLoadingJobs && (
+                                        <span className="ms-2 text-muted">
+                                            <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                            Updating
+                                        </span>
+                                    )}
+                                </small>
+                            </div>
+                            <div className="d-flex align-items-center gap-3 flex-wrap">
+                                <div className="d-flex align-items-center gap-2">
+                                    <small className="text-muted">Rows per page</small>
+                                    <select
+                                        className="form-select form-select-sm"
+                                        style={{ width: '90px' }}
+                                        value={pageSize}
+                                        onChange={handlePageSizeChange}
+                                        aria-label="Select rows per page"
+                                    >
+                                        {pageSizeOptions.map(option => (
+                                            <option key={option} value={option}>{option}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="btn-group" role="group" aria-label="Pagination controls">
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline-secondary btn-sm"
+                                        onClick={() => handlePageChange(1)}
+                                        disabled={currentPage === 1 || isLoadingJobs}
+                                        title="First page"
+                                    >
+                                        <i className="bi bi-chevron-double-left"></i>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline-secondary btn-sm"
+                                        onClick={() => handlePageChange(currentPage - 1)}
+                                        disabled={currentPage === 1 || isLoadingJobs}
+                                        title="Previous page"
+                                    >
+                                        <i className="bi bi-chevron-left"></i>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline-secondary btn-sm"
+                                        onClick={() => handlePageChange(currentPage + 1)}
+                                        disabled={currentPage === totalPages || isLoadingJobs}
+                                        title="Next page"
+                                    >
+                                        <i className="bi bi-chevron-right"></i>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-outline-secondary btn-sm"
+                                        onClick={() => handlePageChange(totalPages)}
+                                        disabled={currentPage === totalPages || isLoadingJobs}
+                                        title="Last page"
+                                    >
+                                        <i className="bi bi-chevron-double-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <table className="table table-hover">
+                            <thead>
                                 <tr>
-                                    <td colSpan={4} className="text-center text-muted py-4">No jobs match your search.</td>
+                                    <th>Filename</th>
+                                    <th>Status</th>
+                                    <th>Date</th>
+                                    <th>Action</th>
                                 </tr>
-                            ) : (
-                                filteredJobs.map(job => (
-                                    <tr key={job.id}>
-                                        <td style={{ maxWidth: '260px' }}>
-                                        {renamingJobId === job.id ? (
-                                            <div className="d-flex align-items-center gap-2">
-                                                <input
-                                                    className="form-control form-control-sm"
-                                                    value={renameValue}
-                                                    onChange={event => setRenameValue(event.target.value)}
-                                                    onKeyDown={event => {
-                                                        if (event.key === 'Enter') {
-                                                            event.preventDefault();
-                                                            handleSaveRename();
-                                                        } else if (event.key === 'Escape') {
-                                                            event.preventDefault();
-                                                            handleCancelRename();
-                                                        }
-                                                    }}
-                                                    disabled={isRenaming}
-                                                    autoFocus
-                                                />
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-sm btn-primary"
-                                                    onClick={handleSaveRename}
-                                                    disabled={isRenaming || !renameValue.trim()}
-                                                    title="Save filename"
-                                                >
-                                                    <i className="bi bi-check-lg"></i>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-sm btn-outline-secondary"
-                                                    onClick={handleCancelRename}
-                                                    disabled={isRenaming}
-                                                    title="Cancel"
-                                                >
-                                                    <i className="bi bi-x-lg"></i>
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <div className="d-flex align-items-center justify-content-between gap-2">
-                                                <span className="text-truncate" style={{ maxWidth: '180px' }} title={job.filename}>
-                                                    {job.filename}
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-link btn-sm p-0 text-secondary"
-                                                    onClick={() => handleStartRename(job)}
-                                                    disabled={isRenaming}
-                                                    title="Rename file"
-                                                >
-                                                    <i className="bi bi-pencil-square"></i>
-                                                </button>
-                                            </div>
-                                        )}
-                                        </td>
-                                        <td>
-                                            <div className="d-flex align-items-center">
-                                                <span className={`badge bg-${job.status === 'completed' ? 'success' : (job.status === 'failed' ? 'danger' : (job.status === 'processing' ? 'primary' : 'warning'))} me-2`}>
-                                                    {job.status === 'queued' ? 'Queued' : job.status === 'processing' ? 'Processing' : job.status === 'completed' ? 'Completed' : job.status === 'failed' ? 'Failed' : job.status}
-                                                </span>
-                                                {job.status === 'processing' && job.progress !== undefined && (
-                                                    <small className="text-muted">{Math.round(job.progress)}%</small>
-                                                )}
-                                            </div>
-                                            {job.status === 'processing' && job.progress !== undefined && (
-                                                <ProgressBar now={job.progress} className="mt-1" style={{ height: '4px' }} />
-                                            )}
-                                            {job.error_message && (
-                                                <small className="text-danger d-block mt-1">{job.error_message}</small>
-                                            )}
-                                        </td>
-                                        <td>{new Date(job.created_at).toLocaleString()}</td>
-                                        <td>
-                                            <Link to={`/jobs/${job.id}`} className={`btn btn-sm btn-info me-2 ${job.status !== 'completed' ? 'disabled' : ''}`}>
-                                                View Result
-                                            </Link>
-                                            {job.status === 'queued' && (
-                                                <button
-                                                    className="btn btn-sm btn-warning me-2"
-                                                    onClick={() => handleCancelJob(job.id)}
-                                                    disabled={isUploading}
-                                                >
-                                                    Cancel
-                                                </button>
-                                            )}
-                                            <button
-                                                className="btn btn-sm btn-danger"
-                                                onClick={() => handleDeleteJob(job.id)}
-                                                disabled={isUploading}
-                                            >
-                                                Delete
-                                            </button>
+                            </thead>
+                            <tbody>
+                                {isLoadingJobs && jobs.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={4} className="text-center text-muted py-4">
+                                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                            Loading jobs…
                                         </td>
                                     </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
+                                ) : showEmptyState ? (
+                                    <tr>
+                                        <td colSpan={4} className="text-center text-muted py-4">{noJobsMessage}</td>
+                                    </tr>
+                                ) : (
+                                    jobs.map(job => {
+                                        const badgeVariant =
+                                            job.status === 'completed'
+                                                ? 'success'
+                                                : job.status === 'failed'
+                                                    ? 'danger'
+                                                    : job.status === 'processing'
+                                                        ? 'primary'
+                                                        : 'warning';
+                                        const statusLabel =
+                                            job.status === 'queued'
+                                                ? 'Queued'
+                                                : job.status === 'processing'
+                                                    ? 'Processing'
+                                                    : job.status === 'completed'
+                                                        ? 'Completed'
+                                                        : job.status === 'failed'
+                                                            ? 'Failed'
+                                                            : job.status;
+
+                                        return (
+                                            <tr key={job.id}>
+                                                <td style={{ maxWidth: '260px' }}>
+                                                    {renamingJobId === job.id ? (
+                                                        <div className="d-flex align-items-center gap-2">
+                                                            <input
+                                                                className="form-control form-control-sm"
+                                                                value={renameValue}
+                                                                onChange={event => setRenameValue(event.target.value)}
+                                                                onKeyDown={event => {
+                                                                    if (event.key === 'Enter') {
+                                                                        event.preventDefault();
+                                                                        void handleSaveRename();
+                                                                    } else if (event.key === 'Escape') {
+                                                                        event.preventDefault();
+                                                                        handleCancelRename();
+                                                                    }
+                                                                }}
+                                                                disabled={isRenaming}
+                                                                autoFocus
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-sm btn-primary"
+                                                                onClick={() => void handleSaveRename()}
+                                                                disabled={isRenaming || !renameValue.trim()}
+                                                                title="Save filename"
+                                                            >
+                                                                <i className="bi bi-check-lg"></i>
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-sm btn-outline-secondary"
+                                                                onClick={handleCancelRename}
+                                                                disabled={isRenaming}
+                                                                title="Cancel"
+                                                            >
+                                                                <i className="bi bi-x-lg"></i>
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="d-flex align-items-center justify-content-between gap-2">
+                                                            <span className="text-truncate" style={{ maxWidth: '180px' }} title={job.filename}>
+                                                                {job.filename}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-link btn-sm p-0 text-secondary"
+                                                                onClick={() => handleStartRename(job)}
+                                                                disabled={isRenaming}
+                                                                title="Rename file"
+                                                            >
+                                                                <i className="bi bi-pencil-square"></i>
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td>
+                                                    <div className="d-flex align-items-center">
+                                                        <span className={`badge bg-${badgeVariant} me-2`}>
+                                                            {statusLabel}
+                                                        </span>
+                                                        {job.status === 'processing' && job.progress !== undefined && (
+                                                            <small className="text-muted">{Math.round(job.progress)}%</small>
+                                                        )}
+                                                    </div>
+                                                    {job.status === 'processing' && job.progress !== undefined && (
+                                                        <ProgressBar now={job.progress} className="mt-1" style={{ height: '4px' }} />
+                                                    )}
+                                                    {job.error_message && (
+                                                        <small className="text-danger d-block mt-1">{job.error_message}</small>
+                                                    )}
+                                                </td>
+                                                <td>{new Date(job.created_at).toLocaleString()}</td>
+                                                <td>
+                                                    <Link
+                                                        to={`/jobs/${job.id}`}
+                                                        className={`btn btn-sm btn-info me-2${job.status !== 'completed' ? ' disabled' : ''}`}
+                                                        aria-disabled={job.status !== 'completed'}
+                                                    >
+                                                        View Result
+                                                    </Link>
+                                                    {job.status === 'queued' && (
+                                                        <button
+                                                            className="btn btn-sm btn-warning me-2"
+                                                            onClick={() => handleCancelJob(job.id)}
+                                                            disabled={isJobMutating}
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        className="btn btn-sm btn-danger"
+                                                        onClick={() => handleDeleteJob(job.id)}
+                                                        disabled={isJobMutating}
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
-            </div>
             </div>
         </>
     );
 }
+
+export default DashboardPage;
