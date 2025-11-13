@@ -303,7 +303,7 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
                 />
                 <button
                     type="button"
-                    className="btn btn-outline-primary upload-inline-trigger"
+                    className="btn btn-primary rounded-circle upload-inline-trigger"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isUploading}
                     title={UPLOAD_PROMPT_HINT}
