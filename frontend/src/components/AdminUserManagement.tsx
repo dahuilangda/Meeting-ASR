@@ -17,6 +17,7 @@ import {
   resetUserPassword,
   activateUser,
   deactivateUser,
+  deleteUser,
   getAdminStats,
   User,
   UserUpdate,
@@ -184,6 +185,27 @@ export const AdminUserManagement: React.FC = () => {
       loadStats();
     } catch (error: any) {
       setError(error.response?.data?.detail || `Failed to ${action} user`);
+    }
+  };
+
+  const handleDeleteUser = async (user: User) => {
+    if (!window.confirm(`Delete ${user.username}? This removes their jobs and shared links.`)) {
+      return;
+    }
+
+    setError(null);
+    setSuccess(null);
+    setLoading(true);
+
+    try {
+      await deleteUser(user.id);
+      setSuccess(`User ${user.username} deleted successfully!`);
+      await loadUsers();
+      await loadStats();
+    } catch (error: any) {
+      setError(error.response?.data?.detail || 'Failed to delete user');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -391,6 +413,14 @@ export const AdminUserManagement: React.FC = () => {
                               onClick={() => handleToggleActive(user)}
                             >
                               <i className={`bi bi-${user.is_active ? 'pause' : 'play'}`}></i>
+                            </Button>
+                            <Button
+                              variant="outline-danger"
+                              size="sm"
+                              onClick={() => handleDeleteUser(user)}
+                              disabled={loading}
+                            >
+                              <i className="bi bi-trash"></i>
                             </Button>
                           </div>
                         </td>

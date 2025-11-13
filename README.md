@@ -117,6 +117,26 @@ npm install
 - 后端地址：http://localhost:8000
 - API 文档：http://localhost:8000/docs
 
+### 6. 配置 OAuth 登录（可选）
+
+如需启用 Google OAuth 注册/登录，请完成以下配置：
+
+1. 在 Google Cloud Console 中创建 OAuth Client，并获取 **Web 应用** 的 `Client ID`。
+2. 在后端 `.env` 文件中添加：
+
+   ```env
+   GOOGLE_CLIENT_ID=你的客户端ID
+   # 如有多个客户端，可使用逗号分隔：GOOGLE_CLIENT_IDS=id1,id2
+   ```
+
+3. 在前端目录 `frontend/` 下创建或更新 `.env` 文件：
+
+   ```env
+   REACT_APP_GOOGLE_CLIENT_ID=你的客户端ID
+   ```
+
+未配置时，界面会自动隐藏 Google 登录按钮，普通账号注册登录不受影响。
+
 ## 📖 详细安装指南
 
 ### 后端详细安装

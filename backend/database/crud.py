@@ -14,7 +14,9 @@ def get_password_hash(password):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     return pwd_context.hash(password[:72])
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    if not hashed_password:
+        return False
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_user_by_username(db: Session, username: str):
@@ -22,6 +24,33 @@ def get_user_by_username(db: Session, username: str):
 
 def get_user_by_email(db: Session, email: str):
     return db.query(models.User).filter(models.User.email == email).first()
+
+def get_user_by_oauth_identity(db: Session, provider: str, subject: str) -> Optional[models.User]:
+    return (
+        db.query(models.User)
+        .filter(models.User.oauth_provider == provider, models.User.oauth_subject == subject)
+        .first()
+    )
+
+
+def link_oauth_identity(
+    db: Session,
+    user: models.User,
+    provider: str,
+    subject: str,
+    *,
+    email: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> models.User:
+    user.oauth_provider = provider
+    user.oauth_subject = subject
+    if email and not user.email:
+        user.email = email
+    if full_name and not user.full_name:
+        user.full_name = full_name
+    db.commit()
+    db.refresh(user)
+    return user
 
 def get_user_by_id(db: Session, user_id: int):
     return db.query(models.User).filter(models.User.id == user_id).first()
@@ -62,6 +91,13 @@ def get_user_count(db: Session, include_inactive: bool = False):
         query = query.filter(models.User.is_active == True)
     return query.count()
 
+
+def count_users_by_role(db: Session, role: models.UserRole, exclude_user_id: Optional[int] = None) -> int:
+    query = db.query(models.User).filter(models.User.role == role)
+    if exclude_user_id is not None:
+        query = query.filter(models.User.id != exclude_user_id)
+    return query.count()
+
 def _normalize_role(role_value):
     """Convert incoming role (string or enum) to models.UserRole."""
     if role_value is None:
@@ -98,6 +134,17 @@ def _normalize_job_status(status_value):
     raise ValueError(f"Unsupported job status value: {status_value!r}")
 
 
+def _prepare_unique_username(db: Session, base: str) -> str:
+    sanitized = (base or "user").strip().replace(" ", "_")
+    sanitized = sanitized or "user"
+    candidate = sanitized
+    suffix = 1
+    while get_user_by_username(db, candidate):
+        candidate = f"{sanitized}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def create_user(db: Session, user: schemas.UserCreate):
     # Truncate password to 72 bytes to comply with bcrypt limitations
     hashed_password = get_password_hash(user.password[:72])
@@ -108,6 +155,33 @@ def create_user(db: Session, user: schemas.UserCreate):
         full_name=user.full_name,
         hashed_password=hashed_password,
         role=normalized_role
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def create_user_from_oauth(
+    db: Session,
+    *,
+    provider: str,
+    subject: str,
+    email: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> models.User:
+    normalized_provider = provider.lower()
+
+    base_username = email.split("@")[0] if email else f"{normalized_provider}_user"
+    username = _prepare_unique_username(db, base_username)
+
+    db_user = models.User(
+        username=username,
+        email=email,
+        full_name=full_name,
+        role=models.UserRole.USER,
+        oauth_provider=normalized_provider,
+        oauth_subject=subject,
     )
     db.add(db_user)
     db.commit()
@@ -157,6 +231,23 @@ def activate_user(db: Session, user_id: int):
         db.commit()
         db.refresh(db_user)
     return db_user
+
+
+def delete_user(db: Session, user_id: int) -> bool:
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return False
+
+    # Remove jobs and associated shares
+    for job in list(user.jobs):
+        db.delete(job)
+
+    # Remove shares the user created for other jobs
+    db.query(models.JobShare).filter(models.JobShare.creator_id == user_id).delete(synchronize_session=False)
+
+    db.delete(user)
+    db.commit()
+    return True
 
 
 def normalize_job_status_strings(db: Session) -> None:

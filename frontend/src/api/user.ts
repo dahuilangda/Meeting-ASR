@@ -10,6 +10,7 @@ export interface User {
   created_at: string;
   last_login?: string;
   job_count: number;
+  oauth_provider?: string | null;
 }
 
 export interface UserUpdate {
@@ -115,4 +116,8 @@ export const deactivateUser = async (userId: number): Promise<{ message: string 
 export const getAdminStats = async (): Promise<AdminStats> => {
   const response = await apiClient.get('/admin/stats');
   return response.data as AdminStats;
+};
+
+export const deleteUser = async (userId: number): Promise<void> => {
+  await apiClient.delete(`/admin/users/${userId}`);
 };

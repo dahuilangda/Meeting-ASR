@@ -18,6 +18,7 @@ from fastapi import (
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 from typing import List, Dict, Optional, Union, Any
 from contextlib import asynccontextmanager
 from pydantic import ConfigDict
@@ -32,6 +33,7 @@ import threading
 import mimetypes
 from pathlib import Path
 import secrets
+from uuid import uuid4
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +43,9 @@ from database import crud, models, schemas
 from database.database import SessionLocal, engine
 import security
 from job_queue import job_queue_manager
+
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -66,8 +71,62 @@ os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:pyannote.*,ignore::SyntaxWar
 if not os.getenv("HF_ENDPOINT"):
     os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
+
+def _collect_google_oauth_audiences() -> List[str]:
+    configured: set[str] = set()
+    primary = os.getenv("GOOGLE_CLIENT_ID")
+    if primary:
+        configured.add(primary.strip())
+
+    additional = os.getenv("GOOGLE_CLIENT_IDS", "")
+    for candidate in additional.split(","):
+        candidate = candidate.strip()
+        if candidate:
+            configured.add(candidate)
+
+    return [aud for aud in configured if aud]
+
+
+GOOGLE_OAUTH_AUDIENCES = _collect_google_oauth_audiences()
+if GOOGLE_OAUTH_AUDIENCES:
+    logger.info("Google OAuth configured for %d client IDs", len(GOOGLE_OAUTH_AUDIENCES))
+else:
+    logger.info("Google OAuth client ID not configured; OAuth login disabled")
+
 # --- App and DB Setup ---
 models.Base.metadata.create_all(bind=engine)
+
+def ensure_user_table_upgrades() -> None:
+    """Ensure new OAuth columns and indexes exist for legacy databases."""
+    try:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("users")}
+    except Exception as exc:
+        logger.warning(f"Skipping user table upgrade check: {exc}")
+        return
+
+    ddl_statements: List[str] = []
+    if "oauth_provider" not in columns:
+        ddl_statements.append("ALTER TABLE users ADD COLUMN oauth_provider VARCHAR")
+    if "oauth_subject" not in columns:
+        ddl_statements.append("ALTER TABLE users ADD COLUMN oauth_subject VARCHAR")
+
+    try:
+        with engine.begin() as connection:
+            for statement in ddl_statements:
+                try:
+                    connection.execute(text(statement))
+                except Exception as alter_error:
+                    logger.warning(f"Failed to apply user table migration '{statement}': {alter_error}")
+
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_oauth_provider ON users(oauth_provider)"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_users_oauth_subject ON users(oauth_subject)"))
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_oauth_identity ON users(oauth_provider, oauth_subject)"))
+    except Exception as upgrade_error:
+        logger.warning(f"Failed to ensure OAuth columns for users table: {upgrade_error}")
+
+
+ensure_user_table_upgrades()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -148,6 +207,29 @@ app.add_middleware(
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 TRANSCRIPT_STORAGE_DIR = Path("uploads/transcripts")
+UPLOAD_SIZE_LIMIT_BYTES = 200 * 1024 * 1024  # 200MB per merged upload
+
+
+def sanitize_stem(candidate: Optional[str], fallback: str = "upload") -> str:
+    name = (candidate or fallback).strip()
+    if not name:
+        name = fallback
+    # Only allow safe characters in filenames
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    return sanitized or fallback
+
+
+def ensure_unique_filename(directory: Path, stem: str, extension: str) -> tuple[str, Path]:
+    candidate = directory / f"{stem}{extension}"
+    if not candidate.exists():
+        return candidate.name, candidate
+
+    counter = 1
+    while True:
+        candidate = directory / f"{stem}_{counter}{extension}"
+        if not candidate.exists():
+            return candidate.name, candidate
+        counter += 1
 
 def build_download_filename(original_filename: Optional[str], default_stem: str, suffix: str) -> str:
     """Create a human-readable download filename using the original stem when possible."""
@@ -348,6 +430,27 @@ def get_db():
     try: yield db
     finally: db.close()
 
+
+def _verify_google_id_token(id_token_value: str) -> dict:
+    if not GOOGLE_OAUTH_AUDIENCES:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google OAuth is not configured on the server",
+        )
+
+    last_error: Optional[Exception] = None
+    for audience in GOOGLE_OAUTH_AUDIENCES:
+        try:
+            return google_id_token.verify_oauth2_token(
+                id_token_value,
+                google_requests.Request(),
+                audience,
+            )
+        except ValueError as exc:
+            last_error = exc
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Google ID token") from last_error
+
 # --- Auth & User Management ---
 async def get_current_user(token: str = Depends(security.oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
@@ -388,6 +491,9 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
         db_email = crud.get_user_by_email(db, email=user.email)
         if db_email: raise HTTPException(status_code=400, detail="Email already registered")
 
+    if user.confirm_password is not None and user.password != user.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+
     return crud.create_user(db=db, user=user)
 
 @app.post("/token", response_model=schemas.Token)
@@ -400,6 +506,68 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
 
     # Update last login time
+    crud.update_last_login(db, user.id)
+
+    access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        data={"sub": user.username, "role": user.role.value},
+        expires_delta=access_token_expires,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/oauth/login", response_model=schemas.Token)
+def oauth_login(request: schemas.OAuthLoginRequest, db: Session = Depends(get_db)):
+    provider = request.provider.value.lower()
+
+    if provider == schemas.OAuthProvider.GOOGLE.value:
+        token_payload = _verify_google_id_token(request.id_token)
+        subject = token_payload.get("sub")
+        email = token_payload.get("email")
+        email_verified_flag = token_payload.get("email_verified")
+        if email_verified_flag not in (True, None, "true", "True"):
+            email = None
+        full_name = token_payload.get("name")
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported OAuth provider")
+
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth token missing subject claim")
+
+    user = crud.get_user_by_oauth_identity(db, provider, subject)
+
+    if not user and email:
+        existing_by_email = crud.get_user_by_email(db, email=email)
+        if existing_by_email:
+            if existing_by_email.oauth_provider and existing_by_email.oauth_provider != provider:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already linked to another provider")
+            if (
+                existing_by_email.oauth_provider == provider
+                and existing_by_email.oauth_subject
+                and existing_by_email.oauth_subject != subject
+            ):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already linked to a different identity")
+            user = crud.link_oauth_identity(
+                db,
+                existing_by_email,
+                provider,
+                subject,
+                email=email,
+                full_name=full_name,
+            )
+
+    if not user:
+        user = crud.create_user_from_oauth(
+            db,
+            provider=provider,
+            subject=subject,
+            email=email,
+            full_name=full_name,
+        )
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
+
     crud.update_last_login(db, user.id)
 
     access_token_expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -728,7 +896,7 @@ def process_audio_file(job_id: int, filepath: str, db_session_class):
                     os.remove(temp_segment_file)
 
             current_progress = loop_progress_start + per_segment_increment * (i + 1)
-            emit_progress(min(current_progress, loop_progress_end), f"Transcribed segment {i+1}/{total_segments}")
+            emit_progress(min(current_progress, loop_progress_end))
         
         # Calculate coverage statistics
         coverage_percentage = (total_coverage / audio_duration) * 100 if audio_duration > 0 else 0
@@ -853,23 +1021,62 @@ job_queue_manager.set_processing_handler(
 @app.post("/upload", response_model=schemas.Job)
 async def upload_file(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    files: Optional[List[UploadFile]] = File(None),
+    file: Optional[UploadFile] = File(None),
     current_user: schemas.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Upload file and add it to the processing queue"""
-    upload_dir = "uploads"
-    os.makedirs(upload_dir, exist_ok=True)
+    """Upload one or more files, optionally merging them before queuing."""
+    upload_dir = Path("uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check file size (limit to 200MB)
-    file.file.seek(0, 2)  # Seek to end
-    file_size = file.file.tell()
-    file.file.seek(0)  # Reset position
+    incoming_files: List[UploadFile] = []
+    if file is not None:
+        incoming_files.append(file)
+    if files:
+        incoming_files.extend([item for item in files if item is not None])
 
-    if file_size > 200 * 1024 * 1024:  # 200MB
+    if not incoming_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files were provided for upload."
+        )
+
+    if len(incoming_files) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You can upload up to 10 files at a time."
+        )
+
+    total_size = 0
+    file_sizes: List[int] = []
+    for upload in incoming_files:
+        try:
+            upload.file.seek(0, os.SEEK_END)
+            size = upload.file.tell()
+            upload.file.seek(0)
+        except Exception:
+            size = 0
+
+        if size <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File '{upload.filename or 'unknown'}' appears to be empty."
+            )
+
+        if size > UPLOAD_SIZE_LIMIT_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File '{upload.filename or 'unknown'}' exceeds the 200MB limit."
+            )
+
+        total_size += size
+        file_sizes.append(size)
+
+    if total_size > UPLOAD_SIZE_LIMIT_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File too large. Maximum size is 200MB."
+            detail="Combined file size exceeds the 200MB limit."
         )
 
     # Check user's active job count
@@ -880,61 +1087,219 @@ async def upload_file(
             detail="Too many concurrent jobs. Please wait for current jobs to complete."
         )
 
-    # Handle potential filename conflicts by adding a counter if file exists
-    original_filename = file.filename
-    filename = original_filename
-    counter = 1
+    # Single-file upload path keeps original workflow
+    if len(incoming_files) == 1:
+        upload = incoming_files[0]
+        original_name = os.path.basename(upload.filename or "upload.wav")
+        stem = sanitize_stem(Path(original_name).stem or "upload")
+        extension = Path(original_name).suffix or ".wav"
+        if not extension.startswith('.'):
+            extension = f".{extension}"
+        extension = re.sub(r"[^A-Za-z0-9.]", "", extension) or ".wav"
+        resolved_name, final_path = ensure_unique_filename(upload_dir, stem, extension)
 
-    filepath = os.path.join(upload_dir, filename)
-    while os.path.exists(filepath):
-        name, ext = os.path.splitext(original_filename)
-        filename = f"{name}_{counter}{ext}"
-        filepath = os.path.join(upload_dir, filename)
-        counter += 1
+        try:
+            with open(final_path, "wb") as buffer:
+                shutil.copyfileobj(upload.file, buffer)
+        finally:
+            await upload.close()
 
-    # Save file
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        background_tasks.add_task(compress_audio_file, str(final_path))
 
-    # Schedule background compression to optimize playback size
-    background_tasks.add_task(compress_audio_file, filepath)
-
-    # Create job in database
-    job = crud.create_job(
-        db=db,
-        filename=filename,
-        owner_id=current_user.id,
-        file_path=filepath,
-        file_size=file_size
-    )
-
-    # Add job to queue
-    success = await job_queue_manager.add_job(
-        job_id=job.id,
-        user_id=current_user.id,
-        file_path=filepath,
-        filename=filename
-    )
-
-    if not success:
-        # If queue is full, delete the job and file
-        crud.delete_job(db, job.id)
-        os.remove(filepath)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job queue is full. Please try again later."
+        job = crud.create_job(
+            db=db,
+            filename=resolved_name,
+            owner_id=current_user.id,
+            file_path=str(final_path),
+            file_size=file_sizes[0]
         )
 
-    # Notify user via WebSocket
-    await manager.send_personal_message({
-        "type": "job_uploaded",
-        "job_id": job.id,
-        "filename": filename,
-        "status": job.status.value,
-        "message": f"File '{filename}' uploaded successfully and added to processing queue"
-    }, current_user.id)
+        success = await job_queue_manager.add_job(
+            job_id=job.id,
+            user_id=current_user.id,
+            file_path=str(final_path),
+            filename=resolved_name
+        )
 
-    return job
+        if not success:
+            crud.delete_job(db, job.id)
+            try:
+                os.remove(final_path)
+            except OSError:
+                logger.warning("Failed to remove file %s after queue rejection", final_path)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Job queue is full. Please try again later."
+            )
+
+        await manager.send_personal_message({
+            "type": "job_uploaded",
+            "job_id": job.id,
+            "filename": resolved_name,
+            "status": job.status.value,
+            "message": f"File '{resolved_name}' uploaded successfully and added to processing queue"
+        }, current_user.id)
+
+        return job
+
+    # Multi-file upload: merge in order of selection
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"meeting-asr-merge-{current_user.id}-"))
+    raw_paths: List[Path] = []
+    converted_paths: List[Path] = []
+
+    try:
+        for index, upload in enumerate(incoming_files):
+            base_name = os.path.basename(upload.filename or f"part_{index + 1}")
+            stem = sanitize_stem(Path(base_name).stem or f"part_{index + 1}")
+            extension = Path(base_name).suffix or ".wav"
+            if not extension.startswith('.'):
+                extension = f".{extension}"
+            extension = re.sub(r"[^A-Za-z0-9.]", "", extension) or ".wav"
+
+            raw_path = temp_dir / f"{index:03d}_{stem}{extension}"
+            with open(raw_path, "wb") as buffer:
+                shutil.copyfileobj(upload.file, buffer)
+            raw_paths.append(raw_path)
+
+            converted_path = temp_dir / f"{index:03d}_{stem}_converted.wav"
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(raw_path),
+                        "-vn",
+                        "-acodec",
+                        "pcm_s16le",
+                        "-ar",
+                        "16000",
+                        "-ac",
+                        "1",
+                        "-loglevel",
+                        "error",
+                        str(converted_path),
+                    ],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except FileNotFoundError:
+                logger.error("ffmpeg executable not found while converting %s", raw_path)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Audio processing service is unavailable."
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr_output = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+                logger.error("Failed to convert uploaded file %s: %s", raw_path, stderr_output)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to process one of the uploaded files."
+                )
+
+            converted_paths.append(converted_path)
+        # Ensure UploadFile objects get closed once copied
+        concat_manifest = temp_dir / "concat.txt"
+        with open(concat_manifest, "w", encoding="utf-8") as manifest:
+            for path in converted_paths:
+                safe_path = str(path).replace("'", "'\\''")
+                manifest.write(f"file '{safe_path}'\n")
+
+        merged_temp_path = temp_dir / "merged.wav"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_manifest),
+                    "-c:a",
+                    "pcm_s16le",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-loglevel",
+                    "error",
+                    str(merged_temp_path),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error("ffmpeg executable not found while merging files for user %s", current_user.id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Audio processing service is unavailable."
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr_output = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+            logger.error("Failed to merge uploaded files for user %s: %s", current_user.id, stderr_output)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to merge uploaded files."
+            )
+
+        primary_name = os.path.basename(incoming_files[0].filename or "session")
+        merged_stem = sanitize_stem(Path(primary_name).stem or "session") + "_merged"
+        merged_extension = ".wav"
+        resolved_name, final_path = ensure_unique_filename(upload_dir, merged_stem, merged_extension)
+        shutil.move(str(merged_temp_path), final_path)
+
+        background_tasks.add_task(compress_audio_file, str(final_path))
+
+        final_size = os.path.getsize(final_path)
+        job = crud.create_job(
+            db=db,
+            filename=resolved_name,
+            owner_id=current_user.id,
+            file_path=str(final_path),
+            file_size=final_size
+        )
+
+        success = await job_queue_manager.add_job(
+            job_id=job.id,
+            user_id=current_user.id,
+            file_path=str(final_path),
+            filename=resolved_name
+        )
+
+        if not success:
+            crud.delete_job(db, job.id)
+            try:
+                os.remove(final_path)
+            except OSError:
+                logger.warning("Failed to remove merged file %s after queue rejection", final_path)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Job queue is full. Please try again later."
+            )
+
+        await manager.send_personal_message({
+            "type": "job_uploaded",
+            "job_id": job.id,
+            "filename": resolved_name,
+            "status": job.status.value,
+            "message": f"{len(incoming_files)} files merged and queued as '{resolved_name}'"
+        }, current_user.id)
+
+        return job
+    finally:
+        for upload in incoming_files:
+            try:
+                await upload.close()
+            except Exception:
+                pass
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            logger.warning("Failed to clean up temporary upload directory %s", temp_dir)
 
 @app.get("/jobs", response_model=schemas.JobListResponse)
 def get_user_jobs(
@@ -2546,6 +2911,35 @@ async def update_user_by_admin(
         last_login=updated_user.last_login,
         job_count=job_count
     )
+
+
+@app.delete("/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user_by_admin(
+    user_id: int,
+    current_user: schemas.User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a user account (Admin only)."""
+    if current_user.id == user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete your own account")
+
+    target_user = crud.get_user_by_id(db, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if (target_user.role == models.UserRole.SUPER_ADMIN and
+            current_user.role != models.UserRole.SUPER_ADMIN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only super admin can delete a super admin")
+
+    if target_user.role == models.UserRole.SUPER_ADMIN:
+        remaining_super_admins = crud.count_users_by_role(db, models.UserRole.SUPER_ADMIN, exclude_user_id=user_id)
+        if remaining_super_admins == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete the last super admin")
+
+    if not crud.delete_user(db, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 @app.post("/admin/users/{user_id}/reset_password")
 async def reset_user_password(

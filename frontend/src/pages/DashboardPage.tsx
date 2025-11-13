@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
 import { apiClient, renameJob } from '../api';
@@ -36,35 +36,222 @@ interface JobListResponse {
     total_pages: number;
 }
 
+function formatFileSize(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+        return 'Unknown size';
+    }
+    if (bytes === 0) {
+        return '0 B';
+    }
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, exponent);
+    return `${value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${units[exponent]}`;
+}
+
+const UPLOAD_PROMPT_HINT = 'Add audio or video files (MP3, MP4, WAV, MOV · up to 10 files · 200 MB total)';
+
 function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }) {
-    const [file, setFile] = useState<File | null>(null);
+    const [files, setFiles] = useState<File[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const [error, setError] = useState('');
+    const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const fileInputIdRef = useRef(`upload-input-${Math.random().toString(36).slice(2, 10)}`);
+    const fileInputId = fileInputIdRef.current;
+
+    const addFiles = useCallback((selected: File[]) => {
+        if (!selected.length) {
+            return;
+        }
+        let errorMessage = '';
+        setFiles(prevFiles => {
+            const combined = [...prevFiles];
+            const existingKeys = new Set(combined.map(file => `${file.name}-${file.size}-${file.lastModified}`));
+            for (const candidate of selected) {
+                const key = `${candidate.name}-${candidate.size}-${candidate.lastModified}`;
+                if (!existingKeys.has(key)) {
+                    combined.push(candidate);
+                    existingKeys.add(key);
+                }
+            }
+            if (combined.length > 10) {
+                errorMessage = 'You can select up to 10 files at a time.';
+                return combined.slice(0, 10);
+            }
+            return combined;
+        });
+        setError(errorMessage);
+    }, []);
 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        if (event.target.files) {
-            setFile(event.target.files[0]);
+        const selection = Array.from(event.target.files ?? []);
+        if (selection.length === 0) {
+            return;
         }
+        addFiles(selection);
+        event.target.value = '';
+    };
+
+    const handleExternalDragOver = (event: React.DragEvent<HTMLElement>) => {
+        if (isUploading) {
+            return;
+        }
+        const types = Array.from(event.dataTransfer.types || []);
+        if (types.includes('Files')) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+        }
+    };
+
+    const handleExternalDrop = (event: React.DragEvent<HTMLElement>) => {
+        if (isUploading) {
+            return;
+        }
+        const types = Array.from(event.dataTransfer.types || []);
+        if (!types.includes('Files')) {
+            return;
+        }
+        event.preventDefault();
+        const dropped = Array.from(event.dataTransfer.files || []);
+        addFiles(dropped);
+    };
+
+    const totalSize = useMemo(() => files.reduce((sum, current) => sum + current.size, 0), [files]);
+    const hasFiles = files.length > 0;
+    const uploadSubtitle = useMemo(() => {
+        if (!hasFiles) {
+            return '';
+        }
+        if (files.length === 1) {
+            const singleMeta = formatFileSize(files[0].size);
+            return isUploading ? `${singleMeta} · Uploading…` : singleMeta;
+        }
+        const groupMeta = `${files.length} files · ${formatFileSize(totalSize)} total`;
+        return isUploading ? `${groupMeta} · Uploading…` : groupMeta;
+    }, [files, hasFiles, isUploading, totalSize]);
+
+    const uploadTitle = useMemo(() => {
+        if (isUploading) {
+            return hasFiles
+                ? (files.length === 1 ? `Uploading ${files[0].name}` : `Uploading ${files.length} files`)
+                : 'Uploading files';
+        }
+        if (!hasFiles) {
+            return 'Ready to upload';
+        }
+        if (files.length === 1) {
+            return files[0].name;
+        }
+        return `${files.length} files ready`;
+    }, [files, hasFiles, isUploading]);
+
+    const reorderFiles = useCallback((fromIndex: number, toIndex: number) => {
+        setFiles(prev => {
+            const count = prev.length;
+            if (fromIndex < 0 || fromIndex >= count) {
+                return prev;
+            }
+            const boundedTarget = Math.max(0, Math.min(toIndex, count));
+            if (boundedTarget === fromIndex) {
+                return prev;
+            }
+            const updated = [...prev];
+            const [moved] = updated.splice(fromIndex, 1);
+            let insertionIndex = boundedTarget;
+            if (fromIndex < boundedTarget) {
+                insertionIndex = boundedTarget - 1;
+            }
+            insertionIndex = Math.max(0, Math.min(insertionIndex, updated.length));
+            updated.splice(insertionIndex, 0, moved);
+            return updated;
+        });
+    }, []);
+
+    const handleDragStart = (event: React.DragEvent<HTMLDivElement>, index: number) => {
+        if (isUploading) {
+            event.preventDefault();
+            return;
+        }
+        setDraggedIndex(index);
+        setDragOverIndex(null);
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', String(index));
+    };
+
+    const handleDragEnter = (index: number) => {
+        if (draggedIndex === null || index === draggedIndex) {
+            return;
+        }
+        setDragOverIndex(index);
+    };
+
+    const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+        if (draggedIndex === null) {
+            return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+    };
+
+    const handleDragLeave = (event: React.DragEvent<HTMLDivElement>, index: number) => {
+        const related = event.relatedTarget as Node | null;
+        if (!event.currentTarget.contains(related)) {
+            setDragOverIndex(prev => (prev === index ? null : prev));
+        }
+    };
+
+    const handleDrop = (event: React.DragEvent<HTMLDivElement>, index: number) => {
+        event.preventDefault();
+        const raw = event.dataTransfer.getData('text/plain');
+        const fromIndex = Number.parseInt(raw, 10);
+        if (!Number.isNaN(fromIndex)) {
+            reorderFiles(fromIndex, index);
+        }
+        setDraggedIndex(null);
+        setDragOverIndex(null);
+    };
+
+    const handleDropAtEnd = (event: React.DragEvent<HTMLDivElement>) => {
+        handleDrop(event, files.length);
+    };
+
+    const handleDragEnd = () => {
+        setDraggedIndex(null);
+        setDragOverIndex(null);
     };
 
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
-        if (!file) {
-            setError('Please select a file to upload.');
+        if (files.length === 0) {
+            setError('Please select at least one file to upload.');
+            return;
+        }
+
+        if (totalSize > 200 * 1024 * 1024) {
+            setError('Total size exceeds 200MB limit. Please remove some files or upload them separately.');
             return;
         }
 
         setIsUploading(true);
         setError('');
         const formData = new FormData();
-        formData.append('file', file);
+        files.forEach(fileItem => {
+            formData.append('files', fileItem);
+        });
 
         try {
             const response = await apiClient.post('/upload', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
             onUploadSuccess(response.data as Job);
-            setFile(null);
+            setFiles([]);
+            setDraggedIndex(null);
+            setDragOverIndex(null);
+            if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+            }
         } catch (err: any) {
             if (err.response?.status === 429) {
                 setError('Too many concurrent jobs. Please wait for current jobs to finish.');
@@ -73,30 +260,146 @@ function UploadForm({ onUploadSuccess }: { onUploadSuccess: (job: Job) => void }
             } else if (err.response?.status === 503) {
                 setError('Job queue is full. Please try again later.');
             } else {
-                setError(err.response?.data?.detail || 'File upload failed. Please try again.');
+                setError(err.response?.data?.detail || 'Upload failed. Please try again.');
             }
         } finally {
             setIsUploading(false);
         }
     };
 
+    const handleRemoveFile = (index: number) => {
+        if (isUploading) {
+            return;
+        }
+        setFiles(prevFiles => {
+            const next = prevFiles.filter((_, idx) => idx !== index);
+            if (next.length === 0 && fileInputRef.current) {
+                fileInputRef.current.value = '';
+            }
+            return next;
+        });
+        setError('');
+        setDraggedIndex(null);
+        setDragOverIndex(null);
+    };
+
     return (
-        <div className="card mb-4">
-            <div className="card-header">
-                <h5 className="mb-0">Upload New Audio/Video File</h5>
+        <form
+            onSubmit={handleSubmit}
+            className="upload-inline"
+            onDragOver={handleExternalDragOver}
+            onDrop={handleExternalDrop}
+        >
+            <div className="upload-inline-controls">
+                <input
+                    ref={fileInputRef}
+                    id={fileInputId}
+                    className="visually-hidden"
+                    type="file"
+                    onChange={handleFileChange}
+                    multiple
+                    accept="audio/*,video/*"
+                    disabled={isUploading}
+                />
+                <button
+                    type="button"
+                    className="btn btn-outline-primary upload-inline-trigger"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    title={UPLOAD_PROMPT_HINT}
+                    aria-label={UPLOAD_PROMPT_HINT}
+                >
+                    <i className="bi bi-plus-lg" aria-hidden="true"></i>
+                </button>
+                {(hasFiles || isUploading) && (
+                    <>
+                        <div className="upload-inline-summary" title={files.length === 1 ? files[0].name : undefined}>
+                            <span className="upload-inline-summary-primary">{uploadTitle}</span>
+                            {hasFiles && uploadSubtitle && (
+                                <span className="upload-inline-summary-secondary">{uploadSubtitle}</span>
+                            )}
+                        </div>
+                        <button
+                            type="submit"
+                            className="btn btn-primary upload-inline-submit"
+                            disabled={isUploading || !hasFiles}
+                            aria-label={isUploading ? 'Uploading files' : 'Upload and process files'}
+                            title={isUploading ? 'Uploading files' : 'Upload and process files'}
+                        >
+                            {isUploading ? (
+                                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            ) : (
+                                <>
+                                    <i className="bi bi-cloud-arrow-up-fill me-2" aria-hidden="true"></i>
+                                    Upload
+                                </>
+                            )}
+                        </button>
+                    </>
+                )}
             </div>
-            <div className="card-body">
-                {error && <div className="alert alert-danger">{error}</div>}
-                <form onSubmit={handleSubmit}>
-                    <div className="mb-3">
-                        <input className="form-control" type="file" onChange={handleFileChange} />
-                    </div>
-                    <button type="submit" className="btn btn-primary" disabled={isUploading || !file}>
-                        {isUploading ? 'Uploading…' : 'Upload and Process'}
-                    </button>
-                </form>
-            </div>
-        </div>
+            {error && <div className="alert alert-danger upload-inline-error">{error}</div>}
+            {hasFiles && (
+                <div className="upload-inline-list" role="list" aria-live="polite">
+                    {files.map((fileItem, index) => (
+                        <div
+                            key={`${fileItem.name}-${fileItem.size}-${fileItem.lastModified}`}
+                            className={`upload-card${draggedIndex === index ? ' dragging' : ''}${dragOverIndex === index ? ' dragover' : ''}`}
+                            role="listitem"
+                            draggable={!isUploading}
+                            onDragStart={event => handleDragStart(event, index)}
+                            onDragEnter={() => handleDragEnter(index)}
+                            onDragOver={handleDragOver}
+                            onDragLeave={event => handleDragLeave(event, index)}
+                            onDrop={event => handleDrop(event, index)}
+                            onDragEnd={handleDragEnd}
+                            aria-grabbed={draggedIndex === index}
+                        >
+                            <div className="upload-card-top">
+                                <div className="upload-card-grip" aria-hidden="true">
+                                    <span className="upload-card-index">{index + 1}</span>
+                                    <span className="upload-card-handle">
+                                        <i className="bi bi-grip-vertical"></i>
+                                    </span>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="upload-card-remove"
+                                    onClick={() => handleRemoveFile(index)}
+                                    aria-label={`Remove ${fileItem.name}`}
+                                    disabled={isUploading}
+                                >
+                                    <i className="bi bi-x-lg" aria-hidden="true"></i>
+                                    <span className="visually-hidden">Remove {fileItem.name}</span>
+                                </button>
+                            </div>
+                            <div className="upload-card-body">
+                                <div className="upload-card-name" title={fileItem.name}>{fileItem.name}</div>
+                                <div className="upload-card-meta">
+                                    {formatFileSize(fileItem.size)}
+                                    {fileItem.type ? ` · ${fileItem.type}` : ''}
+                                </div>
+                                {files.length > 1 && (
+                                    <div className="upload-card-hint">Drag to reorder</div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                    {draggedIndex !== null && (
+                        <div
+                            className={`upload-inline-dropzone${dragOverIndex === files.length ? ' active' : ''}`}
+                            onDragOver={handleDragOver}
+                            onDragEnter={() => handleDragEnter(files.length)}
+                            onDragLeave={event => handleDragLeave(event, files.length)}
+                            onDrop={handleDropAtEnd}
+                            aria-hidden="true"
+                        >
+                            Drop here to move item to the end
+                        </div>
+                    )}
+                </div>
+            )}
+        </form>
     );
 }
 

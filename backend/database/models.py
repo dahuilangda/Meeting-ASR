@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean, Enum, Float
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Text, Boolean, Enum, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
@@ -11,16 +11,21 @@ class UserRole(enum.Enum):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("oauth_provider", "oauth_subject", name="uq_users_oauth_identity"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True, nullable=True)
-    hashed_password = Column(String)
+    hashed_password = Column(String, nullable=True)
     role = Column(Enum(UserRole), default=UserRole.USER)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
     full_name = Column(String, nullable=True)
+    oauth_provider = Column(String, nullable=True, index=True)
+    oauth_subject = Column(String, nullable=True, index=True)
 
     jobs = relationship("Job", back_populates="owner")
     created_shares = relationship("JobShare", back_populates="creator")

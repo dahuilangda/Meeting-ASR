@@ -541,3 +541,14 @@ export const NetworkErrorHandler = {
 
 // Export default API client for convenience
 export default apiClient;
+
+export interface OAuthLoginPayload {
+    provider: 'google';
+    id_token: string;
+    access_token?: string;
+}
+
+export const oauthLogin = async (payload: OAuthLoginPayload): Promise<{ access_token: string; token_type: string }> => {
+    const response = await apiClient.post('/oauth/login', payload);
+    return response.data as { access_token: string; token_type: string };
+};

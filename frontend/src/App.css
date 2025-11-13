@@ -13,23 +13,235 @@
   }
 }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
+.upload-inline {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
 }
 
-.App-link {
-  color: #61dafb;
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
+.upload-inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.upload-inline-trigger {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.1);
+}
+
+.upload-inline-trigger:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.15);
+}
+
+.upload-inline-trigger:focus-visible {
+  outline: 3px solid rgba(13, 110, 253, 0.45);
+  outline-offset: 2px;
+}
+
+.upload-inline-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.upload-inline-summary-primary {
+  font-weight: 600;
+  color: var(--bs-body-color, #212529);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-inline-summary-secondary {
+  font-size: 0.85rem;
+  color: rgba(71, 85, 105, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-inline-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-width: 124px;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+}
+
+.upload-inline-submit .spinner-border {
+  margin: 0;
+}
+
+.upload-inline-error {
+  margin-bottom: 0;
+}
+
+.upload-inline-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  align-content: start;
+}
+
+.upload-card {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 0.9rem;
+  padding: 1rem 1rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  cursor: grab;
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+}
+
+.upload-card:hover {
+  border-color: rgba(37, 99, 235, 0.35);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.16);
+}
+
+.upload-card.dragging {
+  opacity: 0.7;
+  cursor: grabbing;
+  transform: scale(0.99);
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.18);
+}
+
+.upload-card.dragover {
+  border-color: rgba(59, 130, 246, 0.6);
+  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.2);
+}
+
+.upload-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.upload-card-grip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.upload-card-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 0.6rem;
+  background: rgba(37, 99, 235, 0.12);
+  color: rgba(37, 99, 235, 0.9);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.upload-card-handle {
+  font-size: 1.1rem;
+  color: rgba(71, 85, 105, 0.8);
+}
+
+.upload-card-remove {
+  border: none;
+  background: rgba(220, 53, 69, 0.12);
+  color: rgba(220, 53, 69, 0.85);
+  border-radius: 999px;
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.upload-card-remove:hover:not(:disabled) {
+  background: #dc3545;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.upload-card-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.upload-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.upload-card-name {
+  font-weight: 600;
+  color: var(--bs-body-color, #212529);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-card-meta {
+  font-size: 0.85rem;
+  color: rgba(71, 85, 105, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-card-hint {
+  font-size: 0.78rem;
+  color: rgba(37, 99, 235, 0.75);
+}
+
+.upload-inline-dropzone {
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: rgba(71, 85, 105, 0.85);
+}
+
+.upload-inline-dropzone.active {
+  border-color: rgba(59, 130, 246, 0.75);
+  color: rgba(59, 130, 246, 0.9);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+@media (max-width: 575.98px) {
+  .upload-inline-controls {
+    gap: 0.5rem;
+  }
+
+  .upload-inline-summary {
+    flex: 1 1 100%;
+  }
+
+  .upload-inline-submit {
+    width: 100%;
+  }
+
+  .upload-inline-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 @keyframes App-logo-spin {

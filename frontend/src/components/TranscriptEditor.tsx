@@ -696,23 +696,6 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
             50% { opacity: 0.7; }
             100% { opacity: 1; }
           }
-          .highlighted-segment {
-            animation: highlightFade 5s ease-out;
-          }
-          @keyframes highlightFade {
-            0% {
-              background-color: #ffc107 !important;
-              transform: translateX(4px) scale(1.02);
-            }
-            20% {
-              background-color: #fff3cd !important;
-              transform: translateX(2px) scale(1.01);
-            }
-            100% {
-              background-color: #fff3cd;
-              transform: translateX(0) scale(1);
-            }
-          }
           .dropdown-menu {
             z-index: 1060 !important;
             box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15) !important;
@@ -944,14 +927,16 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
               className={`transcript-segment p-2 mb-2 rounded border ${isEditing ? 'border-primary' : ''} ${isHighlighted ? 'highlighted-segment' : ''}`}
               style={{
                 fontSize: '0.9rem',
-                backgroundColor: isHighlighted ? '#fff3cd' : bgColor,
-                borderColor: isHighlighted ? '#ffc107' : (isEditing ? '#007bff' : borderColor),
-                borderLeftWidth: isHighlighted ? '6px' : '3px',
-                borderLeftColor: isHighlighted ? '#ffc107' : borderColor,
-                borderWidth: isHighlighted ? '2px' : '1px',
-                boxShadow: isCurrentlyPlaying ? '0 0 6px rgba(0,0,0,0.15)' : (isHighlighted ? '0 4px 12px rgba(255,193,7,0.4)' : 'none'),
-                transform: isHighlighted ? 'translateX(4px) scale(1.02)' : undefined,
-                transition: 'all 0.3s ease',
+                backgroundColor: isHighlighted ? '#fff5d6' : bgColor,
+                borderColor: isHighlighted ? '#f0b429' : (isEditing ? '#007bff' : borderColor),
+                borderLeftWidth: '3px',
+                borderLeftColor: isHighlighted ? '#f0b429' : borderColor,
+                borderWidth: '1px',
+                boxShadow: isCurrentlyPlaying
+                  ? '0 0 6px rgba(0,0,0,0.15)'
+                  : (isHighlighted ? '0 0 0 2px rgba(240, 180, 41, 0.25)' : 'none'),
+                transform: 'none',
+                transition: 'background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease',
                 position: 'relative',
                 zIndex: isDropdownOpen ? 2000 : (isHighlighted ? 10 : (editingSpeakerForSegment === group.id ? 15 : 1)),
                 overflow: 'visible'
@@ -963,7 +948,7 @@ export const TranscriptEditor: React.FC<TranscriptEditorProps> = ({
                     fontSize: '0.75rem',
                     minWidth: '30px',
                     textAlign: 'center',
-                    animation: isHighlighted ? 'pulse 1.5s infinite' : 'none'
+                    animation: 'none'
                   }}>
                     {index + 1}
                   </span>

@@ -15,6 +15,10 @@ class JobStatusEnum(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+
+class OAuthProvider(str, Enum):
+    GOOGLE = "google"
+
 class JobBase(BaseModel):
     filename: str
 
@@ -134,6 +138,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     role: Optional[UserRole] = UserRole.USER
+    confirm_password: Optional[str] = None
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
@@ -150,6 +155,7 @@ class UserResponse(UserBase):
     created_at: datetime.datetime
     last_login: Optional[datetime.datetime] = None
     job_count: Optional[int] = 0
+    oauth_provider: Optional[str] = None
 
 
 class UserListResponse(BaseModel):
@@ -165,6 +171,13 @@ class User(UserBase):
     created_at: datetime.datetime
     last_login: Optional[datetime.datetime] = None
     jobs: List[JobBase] = []
+    oauth_provider: Optional[str] = None
+
+
+class OAuthLoginRequest(BaseModel):
+    provider: OAuthProvider
+    id_token: str
+    access_token: Optional[str] = None
 
 class PasswordChange(BaseModel):
     current_password: str
