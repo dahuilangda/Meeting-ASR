@@ -1,255 +1,154 @@
 # Meeting ASR Backend
 
-The backend service for the Meeting ASR (Automatic Speech Recognition) application. This is a FastAPI-based server that processes audio files, performs speaker diarization, and generates optimized meeting transcripts with additional features like summarization.
+FastAPI service that powers Meeting ASR processing. It accepts user uploads, runs the FunASR + Pyannote pipeline, stores transcripts, and surfaces AI tooling for meeting follow-up.
 
-## Overview
+## Responsibilities
+- Authenticate users (password + Google OAuth) and guard protected endpoints
+- Orchestrate ASR, diarization, and large-language-model post-processing jobs
+- Persist jobs and transcript artifacts to SQLite (or another SQL backend)
+- Stream job status updates to the frontend via WebSockets
+- Expose an admin surface and helper scripts for operating the system
 
-The backend provides:
-- User authentication and management
-- Audio file upload and processing
-- Automatic speech recognition with FunASR
-- Speaker diarization using Pyannote.audio
-- LLM-powered transcript optimization
-- Meeting summarization
-- Copilot-style chat assistance for meeting follow-up
+## Service Layout
+- `main.py` FastAPI application, routers, and WebSocket handlers
+- `job_queue.py` async worker that sequences long-running ASR jobs
+- `database/` SQLAlchemy models, CRUD helpers, and session management
+- `security.py` token, password, and OAuth utilities
+- `uploads/` raw media, intermediate artifacts, and exported transcripts
+- `create_super_admin.py` helper script for first-run bootstrap
 
-## Features
+## Stack
+- FastAPI + Uvicorn
+- SQLAlchemy on SQLite by default (PostgreSQL/MySQL ready)
+- JWT (OAuth2 Password grant) + Argon2 password hashing
+- FunASR (ModelScope) for Mandarin speech recognition
+- Pyannote.audio for speaker diarization
+- OpenAI-compatible LLM endpoint for transcript polishing and summaries
+- FFmpeg for media normalization
 
-- **Authentication**: JWT-based authentication with user registration and login
-- **File Processing**: Upload audio/video files for transcription
-- **ASR & Diarization**: Speech-to-text conversion with speaker identification
-- **Transcript Optimization**: LLM-powered transcript enhancement
-- **Post-Processing**: Meeting summarization capabilities
-- **Copilot Assistant**: Conversational endpoint to answer questions about transcripts and summaries
-- **Job Management**: Track processing status and results
-- **Transcript Persistence**: Edited transcripts are mirrored to structured JSON/text files for rapid reloads
+## Prerequisites
+- Python 3.10+
+- `pip` / `venv`
+- FFmpeg available on `PATH`
+- Hugging Face access token for Pyannote models
+- (Optional) ModelScope CLI cache directory for offline FunASR models
 
-## Tech Stack
-
-- **Framework**: FastAPI
-- **Database**: SQLite (with SQLAlchemy ORM)
-- **Authentication**: JWT tokens with OAuth2
-- **ASR Engine**: FunASR (Paraformer)
-- **Speaker Diarization**: Pyannote.audio
-- **Audio Processing**: FFMPEG for format conversion
-- **LLM Integration**: OpenAI-compatible API for transcript optimization and summarization
-
-## Installation
-
-1. **Clone the repository** (if you haven't already):
-   ```bash
-   git clone <repository-url>
-   cd Meeting-ASR/backend
-   ```
-
-2. **Create a virtual environment** (recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Set up environment variables**:
-   - Copy the `.env` file and customize it:
-     ```bash
-     cp .env.example .env
-     ```
-   - Edit the `.env` file with your specific configuration, including:
-     - Secret keys for JWT
-     - OpenAI API key and base URL
-     - Hugging Face token for Pyannote models
-     - Model names and other settings
-
-5. **Install additional requirements**:
-   - Install FFMPEG:
-     ```bash
-     # Ubuntu/Debian
-     sudo apt update
-     sudo apt install ffmpeg
-
-     # macOS
-     brew install ffmpeg
-
-     # Windows (using Chocolatey)
-     choco install ffmpeg
-     ```
-
-## Environment Variables
-
-Create a `.env` file in the backend directory with the following variables:
-
-```env
-SECRET_KEY=your-super-secret-key-here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-OPENAI_API_KEY=your-openai-api-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL_NAME=gpt-3.5-turbo
-HF_TOKEN=your-huggingface-token
-HF_ENDPOINT=https://hf-mirror.com
-DATABASE_URL=sqlite:///./sqlite.db
-# Queue concurrency controls (optional)
-JOB_QUEUE_MAX_CONCURRENT=3
-JOB_QUEUE_MAX_SIZE=50
-JOB_QUEUE_MAX_PER_USER=2
-# Optional: point the services to pre-downloaded model caches
-# HF_HOME=/abs/path/to/models/huggingface
-# MODELSCOPE_CACHE=/abs/path/to/models/modelscope
+## Quick Start
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-If you mirror models locally, make sure the paths you set in `.env` exist on disk before starting the server.
+Create a `.env` file (see template below) before starting the server.
 
-## Model Downloads
+## Environment Configuration
+Create `backend/.env` with the variables you need. Values marked as optional can be omitted.
 
-The backend pulls several large models from Hugging Face and ModelScope on first run. To avoid downloading them at runtime or to prepare an offline deployment, you can fetch them manually and point the backend to the local caches.
+```env
+# Security & tokens
+SECRET_KEY=replace-with-a-long-random-string
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
 
-### Pyannote Speaker Diarization (Hugging Face)
+# Database (SQLite local file by default)
+DATABASE_URL=sqlite:///./sqlite.db
 
-1. Install the Hugging Face CLI (already available if `huggingface-hub` is installed):
-   ```bash
-   pip install --upgrade huggingface-hub
-   ```
-2. Authenticate with a token that has access to `pyannote/speaker-diarization-3.1`:
-   ```bash
-   hf auth login --token "$HF_TOKEN"
-   # Older hubs also accept: huggingface-cli login --token "$HF_TOKEN"
-   ```
-3. Download the model to a local directory (example path shown):
-   ```bash
-   hf download pyannote/speaker-diarization-3.1 \
-     --local-dir ./models/huggingface/pyannote/speaker-diarization-3.1 \
-     --local-dir-use-symlinks False
-   ```
-4. Point the backend to the cache by adding the absolute path to `.env`:
-   ```env
-   HF_HOME=/abs/path/to/models/huggingface
-   ```
+# OpenAI-compatible LLM endpoint
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_NAME=gpt-4o-mini
 
-### FunASR ASR / VAD / Punctuation (ModelScope)
+# Hugging Face / ModelScope assets
+HF_TOKEN=hf_...
+HF_ENDPOINT=https://hf-mirror.com
+HF_HOME=/abs/path/to/models/huggingface          # optional, enables local cache reuse
+MODELSCOPE_CACHE=/abs/path/to/models/modelscope  # optional
 
-1. Ensure the ModelScope CLI is available (it is installed alongside `funasr`, but you can upgrade explicitly):
-   ```bash
-   pip install --upgrade modelscope
-   ```
-2. Download the required models to a shared local cache directory:
-   ```bash
-   modelscope download --model iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch \
-     --revision v2.0.4 --local_dir ./models/modelscope/funasr/paraformer-large
+# Frontend integration
+CORS_ORIGINS=http://localhost:3030
 
-   modelscope download --model iic/speech_fsmn_vad_zh-cn-16k-common-pytorch \
-     --revision v2.0.4 --local_dir ./models/modelscope/funasr/fsmn-vad
+# Google OAuth (optional)
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_IDS=comma,separated,extra,ids
 
-   modelscope download --model iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch \
-     --revision v2.0.4 --local_dir ./models/modelscope/funasr/ct-punc
-   ```
-3. Expose the cache location to the backend via `.env` so `AutoModel` can reuse it:
-   ```env
-   MODELSCOPE_CACHE=/abs/path/to/models/modelscope
-   ```
+# Background job tuning (optional defaults shown)
+JOB_QUEUE_MAX_CONCURRENT=3
+JOB_QUEUE_MAX_PER_USER=2
+JOB_QUEUE_MAX_SIZE=50
+```
 
-With these caches in place, the backend will reuse the local files instead of hitting the remote hubs at startup.
+Restart the server whenever `.env` changes so new settings are loaded.
 
-Override the queue settings as needed; restart the backend for changes to take effect.
+## Running Locally
+- `./start_backend.sh` (auto-installs deps and runs Uvicorn on port 8000)
+- or run manually:
+  ```bash
+  uvicorn main:app --reload --host 0.0.0.0 --port 8000
+  ```
+- Interactive docs: `http://localhost:8000/docs`
 
-## Running the Server
+## Processing Pipeline
+1. Upload media via `POST /upload`
+2. Normalize audio with FFmpeg and enqueue a job
+3. FunASR performs Mandarin ASR while Pyannote.audio diarizes speakers
+4. Transcript segments merge into timing-aligned JSON
+5. Optional LLM pass polishes the transcript and drafts summaries
+6. Results persist to the database and mirrored text/JSON files under `uploads/transcripts`
+7. WebSocket pushes progress updates back to each authenticated user
 
-1. **Start the FastAPI server**:
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8040
-   ```
+## Operating the Service
+- **Create an admin**: `python create_super_admin.py` (prompts for credentials)
+- **Job queue**: defaults to in-process workers; adjust queue limits in `.env`
+- **Uploads directory**: ensure disk space and periodic cleanup of stale items
+- **Database upgrades**: automatic index/column checks run on startup; migrate to a managed SQL instance for production
+- **Logging**: standard Python logging; override `logging.basicConfig` for structured output
 
-2. The API will be available at `http://localhost:8000`
-3. The API documentation will be available at `http://localhost:8000/docs`
+## Model Assets
+Download heavy models ahead of time for air-gapped or deterministic deployments.
 
-## API Endpoints
+### Pyannote (Hugging Face)
+```bash
+pip install --upgrade huggingface-hub
+hf auth login --token "$HF_TOKEN"
+hf download pyannote/speaker-diarization-3.1 \
+  --local-dir ./models/huggingface/pyannote/speaker-diarization-3.1 \
+  --local-dir-use-symlinks False
+```
+Set `HF_HOME` to the absolute parent directory so the runtime can reuse it.
 
-### Authentication
-- `POST /register` - Register a new user
-- `POST /token` - Login and get access token
+### FunASR / ModelScope
+```bash
+pip install --upgrade modelscope
+modelscope download --model iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch \
+  --revision v2.0.4 --local_dir ./models/modelscope/funasr/paraformer-large
+modelscope download --model iic/speech_fsmn_vad_zh-cn-16k-common-pytorch \
+  --revision v2.0.4 --local_dir ./models/modelscope/funasr/fsmn-vad
+modelscope download --model iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch \
+  --revision v2.0.4 --local_dir ./models/modelscope/funasr/ct-punc
+```
+Expose the containing directory via `MODELSCOPE_CACHE`.
 
-### File Processing
-- `POST /upload` - Upload audio file for processing (requires auth)
-- `GET /jobs` - Get all jobs for current user (requires auth)
-- `GET /jobs/{job_id}` - Get details of a specific job (requires auth)
-- `DELETE /jobs/{job_id}` - Delete a job (requires auth)
-
-### Post-Processing
-- `POST /jobs/{job_id}/summarize` - Generate summary for a transcript (requires auth)
-- `POST /jobs/{job_id}/optimize` - Optimize transcript using LLM (requires auth)
-- `POST /jobs/{job_id}/transcript` - Persist transcript edits and timing metadata (requires auth)
-- `POST /jobs/{job_id}/update_summary` - Save manual summary edits (requires auth)
-- `POST /assistant/chat` - Ask the meeting copilot questions about transcripts or summaries (requires auth)
-
-## Architecture
-
-The backend follows a standard FastAPI structure with:
-- **Main app** (`main.py`): Contains all API routes and business logic
-- **Database** (`database/`): SQLAlchemy models, CRUD operations, and database connection
-- **Security** (`security.py`): Authentication and authorization utilities
-- **Uploads** (`uploads/`): Temporary storage for uploaded files
-
-### Processing Pipeline
-
-1. User uploads an audio/video file
-2. File is converted to compatible format using FFMPEG
-3. FunASR processes audio for speech-to-text conversion
-4. Pyannote.audio performs speaker diarization
-5. Results are aligned and formatted into speaker-tagged transcript
-6. LLM optimizes transcript for readability and accuracy
-7. Result is stored in the database and made available to the user
-
-## Error Handling
-
-The application handles various error conditions:
-- Invalid file uploads
-- Authentication failures
-- Processing failures
-- Missing environment variables
-- Database connection issues
-
-## Security
-
-- JWT-based authentication for all protected endpoints
-- Password hashing with Argon2
-- Input validation with Pydantic schemas
-- CORS middleware configured for development
-
-## Database Models
-
-- **User**: Stores user information (username, hashed password)
-- **Job**: Tracks processing jobs (filename, status, transcript, summary, etc.)
-
-## Deployment
-
-For production deployment:
-1. Use a production database (PostgreSQL recommended)
-2. Set up a reverse proxy (nginx)
-3. Use a WSGI/ASGI server (Gunicorn/Uvicorn)
-4. Secure all environment variables
-5. Set up proper logging
-6. Implement monitoring and health checks
+## Deployment Notes
+- Prefer Gunicorn with Uvicorn workers behind nginx or another reverse proxy
+- Swap SQLite for PostgreSQL/MySQL via `DATABASE_URL`
+- Configure HTTPS and secure cookie/storage policies
+- Set `CORS_ORIGINS` to trusted frontend origins only
+- Enable monitoring/alerts on queue latency and ASR failure rates
 
 ## Troubleshooting
-
-Common issues and solutions:
-
-- **FFMPEG not found**: Install FFMPEG using your system's package manager
-- **GPU memory issues**: Set CUDA_VISIBLE_DEVICES to limit GPU usage
-- **Model download issues**: Check HF_TOKEN and HF_ENDPOINT settings
-- **Authentication errors**: Verify SECRET_KEY is properly set
+- **Model downloads hang**: make sure `HF_TOKEN` is valid and mirrors are reachable
+- **401 responses**: check `SECRET_KEY`, token expiry, and clock skew
+- **CORS errors**: update `CORS_ORIGINS` to include your frontend domain
+- **Queue saturation**: increase `JOB_QUEUE_MAX_CONCURRENT` or scale horizontally
+- **FFmpeg missing**: install via `apt install ffmpeg`, `brew install ffmpeg`, or Windows package manager
 
 ## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+- Fork the repo and create a feature branch
+- Add/adjust tests where applicable
+- Run formatting and linting tools before opening a pull request
+- Document any new environment variables or endpoints
 
 ## License
-
-[Add your license information here]
+See the project root `LICENSE` file for licensing details.
