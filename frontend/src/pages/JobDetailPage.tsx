@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { apiClient, generateSummary } from '../api';
-import { JobWebSocketClient, WebSocketMessage } from '../websocket';
+import { JobWebSocketClient, WebSocketMessage, getWebSocketBaseUrl } from '../websocket';
 import { TranscriptEditor } from '../components/TranscriptEditor';
 import { SummaryWithReferences } from '../components/SummaryWithReferences';
 import { AssistantChat } from '../components/AssistantChat';
@@ -58,6 +58,7 @@ export function JobDetailPage() {
     const [isResizing, setIsResizing] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const summarizeLockRef = useRef(false);
+    const summaryPollingRef = useRef<number | null>(null);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -154,33 +155,62 @@ export function JobDetailPage() {
         }, 5000);
     }, []);
 
-    useEffect(() => {
-        if (jobId) {
-            apiClient.get(`/jobs/${jobId}`).then(response => {
-                const jobData = response.data as JobDetails;
-                setJob(jobData);
+    const loadJobDetails = useCallback(async () => {
+        if (!jobId) {
+            return;
+        }
 
-                // Parse transcript segments for reference mapping
-                if (jobData.timing_info) {
-                    try {
-                        const timingData = JSON.parse(jobData.timing_info);
-                        const segments = timingData.map((item: any, index: number) => ({
-                            index: index + 1,
-                            speaker: item.speaker || 'Unknown',
-                            text: item.text || '',
-                            start_time: item.start_time || 0,
-                            end_time: item.end_time || 0
-                        }));
-                        setTranscriptSegments(segments);
-                    } catch (error) {
-                        console.error("Error parsing timing info:", error);
-                    }
+        try {
+            const response = await apiClient.get(`/jobs/${jobId}`);
+            const jobData = response.data as JobDetails;
+            setJob(jobData);
+            setError('');
+
+            if (jobData.timing_info) {
+                try {
+                    const timingData = JSON.parse(jobData.timing_info);
+                    const segments = timingData.map((item: any, index: number) => ({
+                        index: index + 1,
+                        speaker: item.speaker || 'Unknown',
+                        text: item.text || '',
+                        start_time: item.start_time || 0,
+                        end_time: item.end_time || 0
+                    }));
+                    setTranscriptSegments(segments);
+                } catch (error) {
+                    console.error("Error parsing timing info:", error);
                 }
-            }).catch(() => {
-                setError('Failed to fetch job details.');
-            });
+            }
+        } catch (err) {
+            setError('Failed to fetch job details.');
         }
     }, [jobId]);
+
+    useEffect(() => {
+        void loadJobDetails();
+    }, [loadJobDetails]);
+
+    const stopSummaryPolling = useCallback(() => {
+        if (summaryPollingRef.current !== null) {
+            window.clearInterval(summaryPollingRef.current);
+            summaryPollingRef.current = null;
+        }
+    }, []);
+
+    const startSummaryPolling = useCallback(() => {
+        if (!jobId || summaryPollingRef.current !== null) {
+            return;
+        }
+        summaryPollingRef.current = window.setInterval(() => {
+            void loadJobDetails();
+        }, 5000);
+    }, [jobId, loadJobDetails]);
+
+    useEffect(() => {
+        return () => {
+            stopSummaryPolling();
+        };
+    }, [stopSummaryPolling]);
 
     useEffect(() => {
         const numericJobId = jobId ? parseInt(jobId, 10) : NaN;
@@ -189,7 +219,7 @@ export function JobDetailPage() {
         }
 
         try {
-            const client = JobWebSocketClient.fromLocalStorage();
+            const client = JobWebSocketClient.fromLocalStorage(getWebSocketBaseUrl());
 
             client.onMessage((message: WebSocketMessage) => {
                 if (message.type !== 'summary_updated') {
@@ -201,6 +231,7 @@ export function JobDetailPage() {
 
                 summarizeLockRef.current = false;
                 setIsSummarizing(false);
+                stopSummaryPolling();
 
                 const updatedSummary = typeof message.summary === 'string' ? message.summary : null;
                 const incomingStatus = typeof message.status === 'string' ? message.status : undefined;
@@ -217,17 +248,22 @@ export function JobDetailPage() {
                 });
             });
 
-            client.connect().catch(err => {
+            client.connect().then(() => {
+                stopSummaryPolling();
+            }).catch(err => {
                 console.error('Failed to connect job detail WebSocket:', err);
+                startSummaryPolling();
             });
 
             return () => {
                 client.disconnect();
+                stopSummaryPolling();
             };
         } catch (err) {
             console.error('Failed to initialize WebSocket for job detail page:', err);
+            startSummaryPolling();
         }
-    }, [jobId]);
+    }, [jobId, startSummaryPolling, stopSummaryPolling]);
 
     // Update URL hash when activeTab changes
     useEffect(() => {

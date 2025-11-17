@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Navbar, Nav, Dropdown, Badge, Alert, ProgressBar } from 'react-bootstrap';
 import { apiClient, renameJob } from '../api';
 import { getCurrentUser, User } from '../api/user';
-import { JobWebSocketClient, WebSocketMessage } from '../websocket';
+import { JobWebSocketClient, WebSocketMessage, getWebSocketBaseUrl } from '../websocket';
 
 interface Job {
     id: number;
@@ -545,7 +545,7 @@ export function DashboardPage() {
             return;
         }
         try {
-            const client = JobWebSocketClient.fromLocalStorage();
+            const client = JobWebSocketClient.fromLocalStorage(getWebSocketBaseUrl());
             client.onMessage((message: WebSocketMessage) => {
                 if (message.message) {
                     setWsNotification(message.message);

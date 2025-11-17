@@ -30,7 +30,10 @@ const deriveWebSocketBaseUrl = (httpUrl: string | undefined | null): string => {
   }
 };
 
-const DEFAULT_WS_BASE_URL = deriveWebSocketBaseUrl(API_SERVER_URL);
+const ENV_WS_URL = process.env.REACT_APP_WS_URL;
+const DEFAULT_WS_BASE_URL = deriveWebSocketBaseUrl(ENV_WS_URL || API_SERVER_URL);
+
+export const getWebSocketBaseUrl = () => DEFAULT_WS_BASE_URL;
 
 export interface WebSocketMessage {
   type: string;
