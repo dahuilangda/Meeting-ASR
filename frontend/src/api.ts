@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_SERVER_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const runtimeOrigin = (typeof window !== 'undefined' && window.location?.origin) ? window.location.origin : undefined;
+export const API_SERVER_URL = process.env.REACT_APP_API_URL || runtimeOrigin || "http://localhost:8000";
 
 // Retry configuration
 const MAX_RETRIES = 3;

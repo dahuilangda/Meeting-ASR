@@ -2,6 +2,35 @@
  * WebSocket client for real-time job status updates
  */
 import { useState, useEffect } from 'react';
+import { API_SERVER_URL } from './api';
+
+const sanitizeBaseUrl = (url: string): string => url.replace(/\/+$/, '');
+
+const deriveWebSocketBaseUrl = (httpUrl: string | undefined | null): string => {
+  const fallback = 'ws://localhost:8000';
+  if (!httpUrl) {
+    return fallback;
+  }
+
+  try {
+    const parsed = new URL(httpUrl);
+    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return sanitizeBaseUrl(parsed.toString());
+  } catch (error) {
+    if (httpUrl.startsWith('https://')) {
+      return sanitizeBaseUrl(httpUrl.replace(/^https:/, 'wss:'));
+    }
+    if (httpUrl.startsWith('http://')) {
+      return sanitizeBaseUrl(httpUrl.replace(/^http:/, 'ws:'));
+    }
+    return sanitizeBaseUrl(httpUrl);
+  }
+};
+
+const DEFAULT_WS_BASE_URL = deriveWebSocketBaseUrl(API_SERVER_URL);
 
 export interface WebSocketMessage {
   type: string;
@@ -35,7 +64,7 @@ export class JobWebSocketClient {
   private onStatusChangeCallback?: (jobId: number, status: string, progress: number) => void;
   private onErrorCallback?: (error: string) => void;
 
-  constructor(token: string, baseUrl: string = "ws://localhost:8000") {
+  constructor(token: string, baseUrl: string = DEFAULT_WS_BASE_URL) {
     this.token = token;
     this.baseUrl = baseUrl;
   }
@@ -148,7 +177,7 @@ export class JobWebSocketClient {
   }
 
   // Static method to create client from localStorage token
-  static fromLocalStorage(baseUrl?: string): JobWebSocketClient {
+  static fromLocalStorage(baseUrl: string = DEFAULT_WS_BASE_URL): JobWebSocketClient {
     const token = localStorage.getItem('token');
     if (!token) {
       throw new Error('No authentication token found in localStorage');
