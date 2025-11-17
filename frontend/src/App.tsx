@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './App.css';
 import { LoginPage } from './pages/LoginPage';
@@ -11,6 +11,8 @@ import NetworkStatus from './components/NetworkStatus';
 import { setupGlobalErrorHandlers, logEnvironmentInfo } from './utils/globalErrorHandlers';
 import SharePage from './pages/SharePage';
 
+const shouldLogEnvironmentInfo = process.env.REACT_APP_LOG_ENV_INFO === 'true';
+
 // A simple component to check for auth token
 function PrivateRoute({ children }: React.PropsWithChildren) {
   const isAuthenticated = localStorage.getItem('token') !== null;
@@ -18,13 +20,16 @@ function PrivateRoute({ children }: React.PropsWithChildren) {
 }
 
 function App() {
+  const hasLoggedEnvInfoRef = useRef(false);
+
   useEffect(() => {
     // Setup global error handlers
     const cleanup = setupGlobalErrorHandlers();
 
-    // Log environment info for debugging
-    if (process.env.NODE_ENV === 'development') {
+    // Optional environment info logging for diagnostics only when explicitly enabled
+    if (shouldLogEnvironmentInfo && !hasLoggedEnvInfoRef.current) {
       logEnvironmentInfo();
+      hasLoggedEnvInfoRef.current = true;
     }
 
     return cleanup;

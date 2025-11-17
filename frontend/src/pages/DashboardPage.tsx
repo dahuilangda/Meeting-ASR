@@ -544,9 +544,24 @@ export function DashboardPage() {
         if (!currentUser) {
             return;
         }
+
+        let isEffectActive = true;
+        let pendingDisconnect = false;
+
         try {
             const client = JobWebSocketClient.fromLocalStorage(getWebSocketBaseUrl());
+
+            const safeDisconnect = () => {
+                pendingDisconnect = false;
+                if (client.isConnected()) {
+                    client.disconnect();
+                }
+            };
+
             client.onMessage((message: WebSocketMessage) => {
+                if (!isEffectActive) {
+                    return;
+                }
                 if (message.message) {
                     setWsNotification(message.message);
                     setTimeout(() => setWsNotification(''), 5000);
@@ -557,6 +572,9 @@ export function DashboardPage() {
                 }
             });
             client.onStatusChange((jobId: number, status: string, progress: number) => {
+                if (!isEffectActive) {
+                    return;
+                }
                 setJobs(prevJobs =>
                     prevJobs.map(job =>
                         job.id === jobId ? { ...job, status, progress: progress || 0 } : job
@@ -564,16 +582,42 @@ export function DashboardPage() {
                 );
             });
             client.onError(err => {
+                if (!isEffectActive) {
+                    return;
+                }
                 if (typeof err === 'string') {
                     setError(err);
                 } else {
                     setError('WebSocket connection error.');
                 }
             });
-            client.connect().then(() => setWsClient(client)).catch(err => {
-                console.error('WebSocket connection failed:', err);
-            });
-            return () => client.disconnect();
+            client.connect()
+                .then(() => {
+                    if (!isEffectActive) {
+                        safeDisconnect();
+                        return;
+                    }
+                    setWsClient(client);
+                })
+                .catch(err => {
+                    if (!isEffectActive) {
+                        return;
+                    }
+                    console.error('WebSocket connection failed:', err);
+                })
+                .finally(() => {
+                    if (!isEffectActive && pendingDisconnect) {
+                        safeDisconnect();
+                    }
+                });
+            return () => {
+                isEffectActive = false;
+                if (client.isConnected()) {
+                    safeDisconnect();
+                } else {
+                    pendingDisconnect = true;
+                }
+            };
         } catch (err) {
             console.error('Failed to create WebSocket client:', err);
         }

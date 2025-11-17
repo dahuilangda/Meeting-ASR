@@ -59,6 +59,7 @@ export function JobDetailPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const summarizeLockRef = useRef(false);
     const summaryPollingRef = useRef<number | null>(null);
+    const wsErrorCountRef = useRef(0);
     
     // Initialize activeTab from URL hash or default to 'transcript'
     const getInitialTab = () => {
@@ -218,10 +219,23 @@ export function JobDetailPage() {
             return;
         }
 
+        let isEffectActive = true;
+        let pendingDisconnect = false;
+
         try {
             const client = JobWebSocketClient.fromLocalStorage(getWebSocketBaseUrl());
 
+            const safeDisconnect = () => {
+                pendingDisconnect = false;
+                if (client.isConnected()) {
+                    client.disconnect();
+                }
+            };
+
             client.onMessage((message: WebSocketMessage) => {
+                if (!isEffectActive) {
+                    return;
+                }
                 if (message.type !== 'summary_updated') {
                     return;
                 }
@@ -248,16 +262,47 @@ export function JobDetailPage() {
                 });
             });
 
+            client.onError((errMessage) => {
+                if (!isEffectActive) {
+                    return;
+                }
+                wsErrorCountRef.current += 1;
+                if (wsErrorCountRef.current >= 2) {
+                    console.warn('Job detail WebSocket error threshold reached, enabling polling.', errMessage);
+                    startSummaryPolling();
+                }
+            });
+
             client.connect().then(() => {
+                if (!isEffectActive) {
+                    safeDisconnect();
+                    return;
+                }
                 stopSummaryPolling();
+                wsErrorCountRef.current = 0;
+                if (pendingDisconnect) {
+                    safeDisconnect();
+                }
             }).catch(err => {
+                if (!isEffectActive) {
+                    return;
+                }
                 console.error('Failed to connect job detail WebSocket:', err);
                 startSummaryPolling();
+            }).finally(() => {
+                if (pendingDisconnect) {
+                    safeDisconnect();
+                }
             });
 
             return () => {
-                client.disconnect();
+                isEffectActive = false;
                 stopSummaryPolling();
+                if (client.isConnected()) {
+                    safeDisconnect();
+                } else {
+                    pendingDisconnect = true;
+                }
             };
         } catch (err) {
             console.error('Failed to initialize WebSocket for job detail page:', err);

@@ -130,10 +130,18 @@ export class JobWebSocketClient {
           if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.scheduleReconnect();
           }
+
+          if (this.onErrorCallback) {
+            const reason = event.reason || `WebSocket closed (code ${event.code})`;
+            this.onErrorCallback(reason);
+          }
         };
 
         this.ws.onerror = (error) => {
           this.isConnecting = false;
+          if (this.onErrorCallback) {
+            this.onErrorCallback('WebSocket encountered an error.');
+          }
           reject(error);
         };
 
