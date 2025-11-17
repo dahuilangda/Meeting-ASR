@@ -67,5 +67,4 @@ backend.log
 frontend.log
 .claude/settings.local.json
 backend/models/
-backend/.env
 .gitignore
